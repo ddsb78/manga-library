@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.7.4
+// @version      2.7.5
 // @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持金石堂、三民、豆瓣、出版社及博客来手动采集。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -466,7 +466,7 @@
       series:()=>''},
     {key:'sanmin',label:'三民',region:'TW',hosts:['www.sanmin.com.tw'],coverHosts:['cdnec.sanmin.com.tw'],
       product:u=>/^\/product\/index\/[0-9]+\/?$/.test(u.pathname)?`${u.origin}${u.pathname.replace(/\/$/,'')}`:null,
-      list:u=>u.pathname==='/search',
+      list:u=>/^\/search\/?$/.test(u.pathname),
       collect:(doc,url)=>{const cards=[...doc.querySelectorAll('.sProduct[id^="Prod"]')];return cards.map(card=>{const a=card.querySelector('.Info .Title a');return {url:a?.getAttribute('href'),title:clean(a?.querySelector('h3')?.textContent || a?.textContent),html:card.outerHTML,queryCode:cards.length===1?new URL(url).searchParams.get('k'):null};});},
       parse:(doc,url,publicSearchCode)=>{const f={};for(const label of doc.querySelectorAll('li.ga .Bold')) {f[clean(label.textContent)]=clean(label.parentElement.textContent).replace(/^[^：:]*[：:]\s*/,'');}
         const list=doc.querySelector('.sProduct'),card=list || doc;
@@ -503,6 +503,11 @@
   const CACHE = CURRENT_SITE ? 'bcd-publisher-v1:'+CURRENT_SITE.key : DOUBAN ? 'bcd-douban-v2' : 'bcd-library-v3';
   const COOLDOWN = CURRENT_SITE ? 'bcd-publisher-cooldown-v1:'+CURRENT_SITE.key : DOUBAN ? 'bcd-douban-cooldown-v1' : 'bcd-cooldown-v2';
   const MAX_ITEMS = 300, MAX_ZIP = 128 * 1024 * 1024, GAP = 2000;
+  const SEARCH_CHOICES = {
+    kingstone:{rows:'.modFilterProd .mod_prod_card,li.displayunit',link:'.pdnamebox a[href],h3 a[href]'},
+    sanmin:{rows:'.sProduct[id^="Prod"]',link:'.Info .Title a[href]',container:'.Info'},
+    eslite:{rows:'.search-product-block .product-item',link:'a[href*="/product/"]',container:'.item-wording-wrap'},
+  };
   const TTL = 7 * 86400000;
   const EDITIONS = [['tankobon', '单行本'], ['aizouban', '爱藏版'], ['collector', '珍藏版'],
     ['kanzenban', '完全版'], ['full_color', '全彩版'], ['deluxe_collection', '典藏版'],
@@ -529,6 +534,13 @@
   const sameSiteId = id => CURRENT_SITE ? publisherRef(id)?.site.key===CURRENT_SITE.key : !id.startsWith('pub-') && id.startsWith('douban-')===DOUBAN;
   function isBooksSearch(value) {
     try {const u=new URL(value);return u.protocol==='https:' && u.hostname==='search.books.com.tw' && u.pathname.startsWith('/search/query/');} catch {return false;}
+  }
+  function isSearchResults(value) {
+    if(isBooksSearch(value)) return true;
+    try {
+      const u=new URL(value), site=SITE_ADAPTERS.find(s=>s.hosts.includes(u.hostname));
+      return u.protocol==='https:' && Boolean(SEARCH_CHOICES[site?.key]) && (site.key==='kingstone' ? u.pathname.startsWith('/search/key/') : /^\/search\/?$/i.test(u.pathname));
+    } catch {return false;}
   }
   function productId(value) {
     try {
@@ -1211,7 +1223,7 @@
     const existing=new Map(state.items.map(item=>[item.id,item]));
     for(const item of items) if(!existing.has(item.id)) {
       if(existing.size>=MAX_ITEMS) throw failure('目录超过 300 项，请缩小范围；尚未将目录标记为完整。');
-      existing.set(item.id,{...item,selected:isBooksSearch(location.href) ? false : state.selectionChanged ? item.selected : !bundle(item),record:cacheRead(item.id)});
+      existing.set(item.id,{...item,selected:isSearchResults(location.href) ? false : state.selectionChanged ? item.selected : !bundle(item),record:cacheRead(item.id)});
     }
     state.items=[...existing.values()];
   }
@@ -1449,16 +1461,25 @@
     if (change) input.addEventListener('input',() => change(input.value)); return input;
   }
   function link(text,url,parent) { const a=el('a',text,parent); a.href=url; a.target='_blank'; a.rel='noopener noreferrer'; return a; }
-  function renderBooksSearchSelection() {
-    if(!isBooksSearch(location.href)) return;
+  function searchSelectionRows() {
+    if(!isSearchResults(location.href)) return [];
+    const rule=SEARCH_CHOICES[CURRENT_SITE?.key];
+    if(rule) return [...document.querySelectorAll(rule.rows)].map(row=>{
+      const href=row.querySelector(rule.link)?.getAttribute('href');
+      return {row,container:row.querySelector(rule.container || ':scope') || row,id:href ? productId(new URL(href,location.href).href) : ''};
+    });
+    return [...document.querySelectorAll('.table-searchbox [id^="prod-itemlist-"],main [id^="prod-itemlist-"]')]
+      .filter(row=>!row.closest('#bcd-panel,#br_searchkw2item,.br_searchkw2item'))
+      .map(row=>({row,container:row,id:(row.id.match(/^prod-itemlist-(001\d+|E\d+)$/) || [])[1]}));
+  }
+  function renderSearchSelection() {
     const items=new Map(state.items.map(item=>[item.id,item]));
-    for(const row of document.querySelectorAll('.table-searchbox [id^="prod-itemlist-"],main [id^="prod-itemlist-"]')) {
-      if(row.closest('#bcd-panel,#br_searchkw2item,.br_searchkw2item')) continue;
-      const id=(row.id.match(/^prod-itemlist-(001\d+|E\d+)$/) || [])[1], item=items.get(id);
+    for(const {row,container,id} of searchSelectionRows()) {
+      const item=items.get(id);
       if(!item) continue;
       let label=row.querySelector('.bcd-search-choice');
       if(!label) {
-        label=el('label'); label.className='bcd-search-choice'; row.prepend(label);
+        label=el('label'); label.className='bcd-search-choice'; container.prepend(label);
         const check=el('input',null,label); check.type='checkbox'; check.setAttribute('aria-label','选入书库：'+item.title);
         el('span','选入书库',label);
         check.addEventListener('change',()=>{
@@ -1472,7 +1493,7 @@
   }
   function render() {
     refreshAuto();
-    renderBooksSearchSelection();
+    renderSearchSelection();
     ui.list.replaceChildren(); const scope=selected();
     const ready=scope.filter(item=>item.record && !item.error).length;
     ui.count.textContent=`已选 ${scope.length} / 已载入 ${state.items.length} 项`+(state.directory ? ` · ${state.directory.complete?'目录已读完（仅书目）':'目录未读完'}` : '')+`\n已选详情已读 ${ready} / ${scope.length} 本 · 待读 ${scope.length-ready} 本`;
@@ -1650,7 +1671,7 @@
   }
   function boot() {
     if(document.getElementById('bcd-panel')) return;
-    const id=productId(location.href), booksSearch=isBooksSearch(location.href), isSeries=CURRENT_SITE ? CURRENT_SITE.list(new URL(location.href)) : DOUBAN ? /^\/series\/\d+\/?$/.test(location.pathname) : booksSearch || location.hostname==='activity.books.com.tw' && location.pathname.startsWith('/crosscat/show/');
+    const id=productId(location.href), booksSearch=isBooksSearch(location.href), searchResults=isSearchResults(location.href), isSeries=CURRENT_SITE ? CURRENT_SITE.list(new URL(location.href)) : DOUBAN ? /^\/series\/\d+\/?$/.test(location.pathname) : booksSearch || location.hostname==='activity.books.com.tw' && location.pathname.startsWith('/crosscat/show/');
     if(!id && !isSeries) return;
     if(id) {
       const item={id,title:id,selected:true,record:null,error:''};
@@ -1660,7 +1681,7 @@
       if(CURRENT_SITE?.detailApi && !item.record) {item.error='';state.blockedUrl='';state.message='本页使用官网公开书目接口，请点击“读取 / 继续读取所选资料”，不会提前联网。';}
     } else {
       const current=collectItems(document); state.currentIds=new Set(current.map(i=>i.id));
-      state.items=current.map(item=>({...item,selected:!booksSearch && !bundle(item),record:cacheRead(item.id)}));
+      state.items=current.map(item=>({...item,selected:!searchResults && !bundle(item),record:cacheRead(item.id)}));
       if(DOUBAN) {
         const sid=location.pathname.match(/\d+/)[0];
         try {
@@ -1709,7 +1730,7 @@
       #bcd-panel button:hover{background:#426286;} #bcd-panel button:disabled{opacity:.55;cursor:default;} #bcd-panel :focus-visible{outline:2px solid #b7dfff;outline-offset:2px;}
       #bcd-panel label{display:block;color:#c6d0df;margin:6px 0;} #bcd-panel input[type=text],#bcd-panel textarea,#bcd-panel select{display:block;font:inherit;color:#e8ecf3;background:#2b3242;border:1px solid #68788e;border-radius:4px;min-height:38px;padding:6px;width:100%;} #bcd-panel textarea{resize:vertical;min-height:78px;}
       #bcd-panel input[type=checkbox]{appearance:auto;width:18px;height:18px;margin:0 8px 0 0;vertical-align:middle;accent-color:#88b6dc;} #bcd-panel a{color:#acd5fc;text-decoration:underline;} #bcd-panel .actions,#bcd-panel .fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0;}
-      .bcd-search-choice{display:flex;align-items:center;gap:8px;width:fit-content;max-width:100%;padding:7px 10px;margin:0 0 8px;background:#eef5fb;color:#234764;border:1px solid #88a9c3;border-radius:4px;font:14px/1.4 "Microsoft JhengHei",sans-serif;cursor:pointer;}
+      .bcd-search-choice{display:flex;align-items:center;align-self:flex-start;flex-shrink:0;gap:8px;width:fit-content;max-width:100%;padding:7px 10px;margin:0 0 8px;background:#eef5fb;color:#234764;border:1px solid #88a9c3;border-radius:4px;font:14px/1.4 "Microsoft JhengHei",sans-serif;white-space:nowrap;cursor:pointer;}
       .bcd-search-choice input[type=checkbox]{appearance:auto;width:20px;height:20px;flex:none;margin:0;accent-color:#386589;cursor:pointer;} .bcd-search-choice:focus-within{outline:2px solid #386589;outline-offset:2px;}
       #bcd-panel .book{padding:10px 0;border-top:1px solid #465167;} #bcd-panel .book>label{display:flex;align-items:flex-start;color:#fff;overflow-wrap:anywhere;} #bcd-panel .book input[type=checkbox]{flex:none;margin-top:3px;} #bcd-panel summary{cursor:pointer;padding:6px 0;color:#acd5fc;} #bcd-panel .warning{color:#ffc2b7;} #bcd-panel [hidden]{display:none!important;} #bcd-panel .exports button{width:100%;margin-top:8px;} #bcd-panel #bcd-status{padding:10px 0;border-top:1px solid #465167;} #bcd-panel .step{margin:16px 0 6px;font-size:15px;} #bcd-panel .primary{width:100%;background:#386589;} #bcd-panel .advanced{margin-top:12px;border-top:1px solid #465167;}
       #bcd-panel .wizard-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;position:sticky;top:-12px;padding:10px 0;background:#1f2430;z-index:1;} #bcd-panel .wizard-nav button{background:transparent;padding:8px 2px;} #bcd-panel .wizard-nav button[aria-current=step]{background:#386589;border-color:#acd5fc;color:#fff;} #bcd-panel .wizard-footer{position:sticky;bottom:-12px;background:#1f2430;padding:8px 0 4px;display:flex;gap:8px;border-top:1px solid #465167;} #bcd-panel .wizard-footer button{flex:1;}
@@ -1741,7 +1762,7 @@
         const items=collectItems(document);mergeItems(items);state.currentIds=new Set(items.map(i=>i.id));state.selectionChanged=true;
         progress(`已载入 ${items.length} 条本页套书目录，请选择所需卷册；不代表全套完整。`);render();
       },selection).dataset.idle='true';
-    } else el('p',booksSearch ? '搜索结果可能包含其他作品。先勾选所需卷册，再分析或读取；不读取推荐区，翻页后保留选择，缺少的册可补链接。' : CURRENT_SITE ? '只读取当前页面已显示的书目，不保证全套完整；不同作品 / 版本请取消勾选。可翻页后刷新本页书目或手动补卷链接。' : DOUBAN ? '默认选择已识别卷册（不含合集）。先读取完整目录，再核对选择。' : '默认选择当前系列的非合集卷册，请核对。',selection);
+    } else el('p',searchResults ? '搜索结果可能包含其他作品。先勾选所需卷册，再分析或读取；不读取推荐区，翻页后保留选择，缺少的册可补链接。' : CURRENT_SITE ? '只读取当前页面已显示的书目，不保证全套完整；不同作品 / 版本请取消勾选。可翻页后刷新本页书目或手动补卷链接。' : DOUBAN ? '默认选择已识别卷册（不含合集）。先读取完整目录，再核对选择。' : '默认选择当前系列的非合集卷册，请核对。',selection);
     if(DOUBAN && isSeries) {const readDirectory=button('读取 / 继续读取整个丛书目录',()=>void loadDirectory(),selection);readDirectory.className='primary';readDirectory.dataset.idle='true';}
     const combine=el('details',null,selection);combine.className='combine-books';combine.open=state.combine;
     el('summary','多册合成作品',combine);
@@ -1847,6 +1868,25 @@
       render();
     });
     render();
+    if(searchResults && CURRENT_SITE?.key==='eslite') {
+      // Eslite loads/replaces search cards after document-idle and when switching views.
+      const selector=SEARCH_CHOICES.eslite.rows; let pending;
+      new MutationObserver(changes=>{
+        const relevant=changes.some(change=>{
+          const target=change.target.nodeType===1 ? change.target : change.target.parentElement;
+          if(target?.closest('#bcd-panel,.bcd-search-choice')) return false;
+          const nodes=[...change.addedNodes,...change.removedNodes];
+          if(nodes.length && nodes.every(node=>node.nodeType===1 && node.matches('.bcd-search-choice'))) return false;
+          return target?.closest(selector) || nodes.some(node=>node.nodeType===1 && (node.matches(selector) || node.querySelector(selector)));
+        });
+        if(!relevant) return;
+        clearTimeout(pending); pending=setTimeout(()=>{
+          try {
+            const items=collectItems(document); state.currentIds=new Set(items.map(item=>item.id)); mergeItems(items); render();
+          } catch(err) {progress(err.message);}
+        },100);
+      }).observe(document.body,{childList:true,subtree:true,characterData:true});
+    }
   }
   boot();
 })();

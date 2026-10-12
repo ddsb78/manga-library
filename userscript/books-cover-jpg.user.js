@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.7.5
-// @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持金石堂、三民、豆瓣、出版社及博客来手动采集。
+// @version      2.7.6
+// @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持读册生活、金石堂、三民、豆瓣、出版社及博客来手动采集。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
 // @updateURL    https://raw.githubusercontent.com/ddsb78/manga-library/main/userscript/books-cover-jpg.user.js
@@ -18,6 +18,8 @@
 // @match        https://www.eslite.com/product/*
 // @match        https://www.eslite.com/Search*
 // @match        https://www.eslite.com/search*
+// @match        https://www.taaze.tw/products/*
+// @match        https://www.taaze.tw/rwd_searchResult.html*
 // @match        https://book.douban.com/subject/*
 // @match        https://book.douban.com/series/*
 // @match        https://www.tongli.com.tw/BooksDetail.aspx*
@@ -54,6 +56,8 @@
 // @connect      www.eslite.com
 // @connect      s.eslite.com
 // @connect      s2.eslite.com
+// @connect      www.taaze.tw
+// @connect      media.taaze.tw
 // @connect      book.douban.com
 // @connect      img.doubanio.com
 // @connect      img1.doubanio.com
@@ -494,6 +498,26 @@
           list_price:amount(text(doc,'.price-group .pre-product-price')),currency:'TWD',
           cover:/product-restricted|noimage/i.test(cover)?sanminCover(code):cover,cover_alternative:sanminCover(code),
           metadata_note:'诚品公开书目；动态页面须等待标题、书目与规格加载完成'};
+      },series:()=>''},
+    {key:'taaze',label:'读册生活 TAAZE',region:'TW',hosts:['www.taaze.tw'],coverHosts:['media.taaze.tw'],
+      product:u=>{
+        const id=(u.pathname.match(/^\/products\/(111[0-9]{8})\.html$/) || [])[1] || (u.pathname==='/usedList.html' && /^111[0-9]{8}$/.test(u.searchParams.get('oid') || '') ? u.searchParams.get('oid') : '');
+        return id ? `${u.origin}/products/${id}.html` : null;
+      },
+      list:u=>u.pathname==='/rwd_searchResult.html',
+      collect:doc=>[...doc.querySelectorAll('#listView .titleMain a[href],#listView a.titleMain[href]')].map(a=>({url:a.getAttribute('href'),title:clean(a.textContent).replace(/\s*\(二手書\)\s*$/,'')})),
+      parse:doc=>{
+        const f={};for(const node of doc.querySelectorAll('#bottomArea span.prodInfo_boldSpan')) {
+          const m=clean(node.textContent).match(/^([^：:]{1,18})[：:]\s*(.*)$/);if(m && !f[m[1]])f[m[1]]=m[2];
+        }
+        const price=[...doc.querySelectorAll('.price > p')].find(n=>/^定價\s*[：:]/.test(clean(n.textContent)));
+        const size=clean(f['開數']);
+        return {title:text(doc,'#ga4ProdTitle'),authors:clean(f['作者']).split(/\s*[/／、;；]\s*/).filter(Boolean),publisher:f['出版社'],
+          ...valueCode(f['ISBN/ISSN']),pub_date:date(f['出版日期']),description:paragraphs(doc.querySelector('#prodPfDiv')),
+          spec:[f['裝訂方式'],f['頁數'],size ? /^\d+$/.test(size) ? `${size}開` : size : ''].filter(Boolean).join('；'),rating:f['分級'],
+          list_price:price ? amount(price.textContent) : null,currency:'TWD',
+          cover:doc.querySelector('img[src*="media.taaze.tw/showThumbnail.html"]')?.getAttribute('src') || meta(doc,'og:image'),
+          metadata_note:f['譯者'] ? '译者：'+f['譯者'] : ''};
       },series:()=>''}];
   }
   const SITE_ADAPTERS = [...publisherAdaptersTW(), ...publisherAdaptersJP(), ...publisherAdaptersExtra(), ...retailerAdapters()];
@@ -507,6 +531,7 @@
     kingstone:{rows:'.modFilterProd .mod_prod_card,li.displayunit',link:'.pdnamebox a[href],h3 a[href]'},
     sanmin:{rows:'.sProduct[id^="Prod"]',link:'.Info .Title a[href]',container:'.Info'},
     eslite:{rows:'.search-product-block .product-item',link:'a[href*="/product/"]',container:'.item-wording-wrap'},
+    taaze:{rows:'#listView > .media,#listView .bookGridByListView',link:'.titleMain a[href],a.titleMain[href]',container:'.info_frame,.bookCaption'},
   };
   const TTL = 7 * 86400000;
   const EDITIONS = [['tankobon', '单行本'], ['aizouban', '爱藏版'], ['collector', '珍藏版'],
@@ -539,7 +564,7 @@
     if(isBooksSearch(value)) return true;
     try {
       const u=new URL(value), site=SITE_ADAPTERS.find(s=>s.hosts.includes(u.hostname));
-      return u.protocol==='https:' && Boolean(SEARCH_CHOICES[site?.key]) && (site.key==='kingstone' ? u.pathname.startsWith('/search/key/') : /^\/search\/?$/i.test(u.pathname));
+      return u.protocol==='https:' && Boolean(SEARCH_CHOICES[site?.key]) && (site.key==='kingstone' ? u.pathname.startsWith('/search/key/') : site.key==='taaze' ? u.pathname==='/rwd_searchResult.html' : /^\/search\/?$/i.test(u.pathname));
     } catch {return false;}
   }
   function productId(value) {
@@ -568,7 +593,9 @@
       if(SITE_ADAPTERS.some(s=>s.coverHosts.includes(u.hostname))) {
         // Publisher/CDN URLs may carry required signatures and have no extension.
         if(u.protocol!=='https:' || u.pathname==='/' || /(?:login|captcha)/i.test(u.pathname)) return '';
-        const noExtension=u.hostname==='img.91app.com' && /^\/webapi\/imagesV3\//.test(u.pathname) || u.hostname==='www.shogakukan.co.jp' && /^\/thumbnail\/books\/\d+\/?$/.test(u.pathname);
+        const taazeImage=u.hostname==='media.taaze.tw' && /^\/show(?:ProdImage|Thumbnail|LargeImage)\.html$/.test(u.pathname) && /^111[0-9]{8}$/.test(u.searchParams.get('sc') || '');
+        if(u.hostname==='media.taaze.tw' && !taazeImage) return '';
+        const noExtension=taazeImage || u.hostname==='img.91app.com' && /^\/webapi\/imagesV3\//.test(u.pathname) || u.hostname==='www.shogakukan.co.jp' && /^\/thumbnail\/books\/\d+\/?$/.test(u.pathname);
         if(!/\.(jpg|jpeg|png|webp|gif)$/i.test(u.pathname) && !noExtension) return '';
         u.hash='';return u.href;
       }
@@ -1077,6 +1104,11 @@
   function publisherDirectoryId(site,url) {
     const u=new URL(url);u.pathname=u.pathname.replace(/\/page\/\d+\/?$/,'/');
     for(const key of ['page','p','offset','limit','sort','order']) u.searchParams.delete(key);
+    if(site.key==='taaze') {
+      for(const key of ['nowPage','layout']) u.searchParams.delete(key);
+      for(const key of ['prodKind','prodCatId','catId','saleDiscStart','saleDiscEnd','salePriceStart','salePriceEnd','publishDateStart','publishDateEnd','prodRank','addMarkFlg','force','catFocus','orgFocus','mainCatFocus','catNmFocus','catIdFocus'])
+        if(['','0'].includes(u.searchParams.get(key))) u.searchParams.delete(key);
+    }
     u.searchParams.sort();return site.key+':'+u.pathname+u.search;
   }
   function booksSearchDirectoryId(value) {
@@ -1868,9 +1900,9 @@
       render();
     });
     render();
-    if(searchResults && CURRENT_SITE?.key==='eslite') {
-      // Eslite loads/replaces search cards after document-idle and when switching views.
-      const selector=SEARCH_CHOICES.eslite.rows; let pending;
+    if(searchResults && ['eslite','taaze'].includes(CURRENT_SITE?.key)) {
+      // These search pages load or replace cards after document-idle/view changes.
+      const selector=SEARCH_CHOICES[CURRENT_SITE.key].rows; let pending;
       new MutationObserver(changes=>{
         const relevant=changes.some(change=>{
           const target=change.target.nodeType===1 ? change.target : change.target.parentElement;

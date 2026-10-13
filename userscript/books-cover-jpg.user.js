@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.7.8
+// @version      2.7.9
 // @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持读册生活、金石堂、三民、豆瓣、出版社及博客来手动采集。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -134,7 +134,7 @@
       return [...found.values()];
     };
     const detailOnly = {list:()=>false,collect:()=>[],series:()=>''};
-    const tongliProduct = u => u.hostname==='www.tongli.com.tw' && /^\/BooksDetail\.aspx$/i.test(u.pathname) && /^[A-Za-z0-9_-]+$/.test(u.searchParams.get('BD') || '') ? `https://www.tongli.com.tw/BooksDetail.aspx?BD=${u.searchParams.get('BD')}` : '';
+    const tongliProduct = u => {const id=u.searchParams.get('BD') || u.searchParams.get('Bd') || '';return u.hostname==='www.tongli.com.tw' && /^\/BooksDetail\.aspx$/i.test(u.pathname) && /^[A-Za-z0-9_-]+$/.test(id) ? `https://www.tongli.com.tw/BooksDetail.aspx?BD=${id}` : '';};
     const chingProduct = u => u.hostname==='www.ching-win.com.tw' && /^\/product-detail\/[A-Za-z0-9_-]+(?:\/[^/]+)?\/?$/.test(u.pathname) ? `https://www.ching-win.com.tw/product-detail/${u.pathname.split('/')[2]}` : '';
     const jdProduct = simpleProduct('jd-intl.com',/^\/product\/[^/]+\/?$/);
     return [
@@ -197,7 +197,7 @@
           return Object.assign(raw,{authors:authors(f['作者']),isbn:f['條碼'],pub_date:date(f['上市日']),spec:f['規格'] || '',rating:f['等級'] || '',list_price:value('SuggestPrice'),cover:suppliedCover});
         }},
       {key:'chingwin',label:'青文',region:'TW',hosts:['www.ching-win.com.tw'],coverHosts:['www.ching-win.com.tw'],product:chingProduct,
-        list:u=>u.hostname==='www.ching-win.com.tw' && /^\/products\/?$/.test(u.pathname) && /^[A-Za-z0-9_-]+$/.test(u.searchParams.get('First') || ''),
+        list:u=>u.hostname==='www.ching-win.com.tw' && (/^\/products\/?$/.test(u.pathname) && /^[A-Za-z0-9_-]+$/.test(u.searchParams.get('First') || '') || /^\/products\/chingwin\/books(?:\/[A-Za-z0-9_-]+)*\/?$/.test(u.pathname)),
         parse(doc,url) {
           const f=fields(doc.querySelectorAll('.linebox > div,.linebox .line-inbox'));
           const raw=defaults(text(doc,'.productTitle .title') || text(doc,'h1') || meta(doc,'og:title').split(' - ')[0],'青文');
@@ -244,7 +244,7 @@
     const kodProduct=product('www.kodansha.co.jp',/^\/comic\/products\/\d+\/?$/);
     const dartProduct=u=>u.hostname==='www.d-art-shop.tw' && /^\/(?:collections\/[^/]+\/)?products\/[^/]+\/?$/.test(u.pathname) ? `https://www.d-art-shop.tw/products/${u.pathname.split('/').filter(Boolean).at(-1)}` : '';
     const links=(doc,selector,url,canonical)=>{
-      const found=new Map();for(const a of doc.querySelectorAll(selector)){let value='';try{value=canonical(new URL(a.getAttribute('href'),url));}catch{ /* Ignore malformed optional page metadata. */ }if(value && !found.has(value))found.set(value,{url:value,title:clean(a.textContent || a.querySelector('img')?.alt)});}return [...found.values()];
+      const found=new Map();for(const a of doc.querySelectorAll(selector)){let value='';try{value=canonical(new URL(a.getAttribute('href'),url));}catch{ /* Ignore malformed optional page metadata. */ }if(value && !found.has(value))found.set(value,{url:value,title:clean(a.textContent) || clean(a.querySelector('img')?.alt)});}return [...found.values()];
     };
     const inertia=doc=>{try{return JSON.parse(doc.querySelector('[data-page]')?.getAttribute('data-page') || '{}').props || {};}catch{return {};}};
     return [
@@ -256,14 +256,14 @@
           const info=clean(paper?.textContent), isbn=text(paper || doc,'#item-ISBN').replace(/^ISBN\s*[:：]\s*/i,'');
           raw.authors=[...doc.querySelectorAll('.item-info-author a')].map(n=>clean(n.textContent));
           return Object.assign(raw,{isbn,pub_date:date(info),list_price:amount((info.match(/[\d,]+円/) || [])[0]),spec:(info.match(/([^\s]+判)／/) || [])[1] || '',description:paragraphs(doc.querySelector('.item-introduction p')),cover:meta(doc,'og:image'),blocked:!paper || !isbn ? '未找到纸版书目资料，请核对实体版本' : ''});
-        },collect:(doc,url)=>links(doc,'.single-item a.searchresult-a[href*="isbn="]',url,smProduct),
+        },collect:(doc,url)=>links(doc,'.single-item a.searchresult-a[href*="isbn="],.single-item .bktitle a[href*="isbn="]',url,smProduct),
         series:(doc,url)=>abs(doc.querySelector('.item-btn-zenkan a[href*="seriesid="]')?.getAttribute('href'),url)},
       {key:'shogakukan',label:'小学馆',region:'JP',hosts:['www.shogakukan.co.jp'],coverHosts:['www.shogakukan.co.jp'],product:shoProduct,
         list:u=>u.hostname==='www.shogakukan.co.jp' && /^\/books\/volume\/\d+\/?$/.test(u.pathname),
         parse(doc,url){
           const book=inertia(doc).book || {}, raw=defaults(clean(book.title),'小学馆');
           return Object.assign(raw,{work_title:clean(book.daihyo_shohin?.daihyo_name),volume_number:book.kansu ? String(book.kansu) : '',authors:(book.auth_notations || []).map(a=>clean(a.auth_name)),isbn:book.isbn13_cd || book.isbn_cd || '',pub_date:date(book.publish_date),list_price:book.teika_now ?? null,spec:book.hankei || '',description:htmlText(doc,book.promo_contents?.[3]),cover:abs(book.image_url,url),blocked:!book.isbn_cd || book.product_type==='digital' ? '未找到实体书目资料，请核对版本' : ''});
-        },collect(doc,url){const books=inertia(doc).books, rows=Array.isArray(books)?books:books?.data || [];return rows.flatMap(b=>{let canonical='';try{canonical=shoProduct(new URL(b.url,url));}catch{ /* Ignore malformed optional page metadata. */ }return canonical?[{url:canonical,title:clean(b.title)}]:[];});},
+        },collect(doc,url){const rendered=links(doc,'#main .bookBox01 p.ttl a[href]',url,shoProduct);if(rendered.length)return rendered;const books=inertia(doc).books, rows=Array.isArray(books)?books:books?.data || [];return rows.flatMap(row=>{const b=row.document?.content || row;let canonical='';try{canonical=shoProduct(new URL(b.url,url));}catch{ /* Ignore malformed optional page metadata. */ }return canonical?[{url:canonical,title:clean(b.title)}]:[];});},
         series(doc){const book=inertia(doc).book;return book?.has_zenkan && book?.daihyo_cd ? `https://www.shogakukan.co.jp/books/volume/${book.daihyo_cd}` : ''; }},
       {key:'kodansha',label:'讲谈社',region:'JP',hosts:['www.kodansha.co.jp'],coverHosts:['dvs-cover.kodansha.co.jp'],product:kodProduct,
         list:u=>u.hostname==='www.kodansha.co.jp' && /^\/titles\/\d+\/?$/.test(u.pathname),
@@ -287,7 +287,7 @@
           const sku=field('商品編號');
           return Object.assign(raw,{authors:field('作\\s*者').split(/[、／]/).map(clean).filter(Boolean),isbn:field('ISBN'),legacy_barcode:field('條\\s*碼'),pub_date:date(field('出版日期') || field('發行日期')),spec:(content.match(/[AB]\d開本[^\n]*/) || [])[0] || '',rating:/18禁|限制級/.test(content)?'限制級':'',list_price:amount(field('售\\s*價')),cover:abs(cover?.getAttribute('src'),url),publisher:/原動力視覺|d\/art/i.test(company)?'原动力视觉':company || null,
             blocked:category && category!=='漫畫' && category!=='畫集' ? '此商品不是可导出的书籍，请核对商品类别' : /套組|合售|套書/.test(title) ? '特典套组或合售不能当作一卷导出，请核对单本' : !/^DAV-/i.test(sku) || !/繁中|繁體中文/.test(title+' '+field('商品版本')) ? '仅支持已确认的 d/art 繁中出版单本，请核对发行公司与版本' : ''});
-        },collect:(doc,url)=>links(doc,'.grid-uniform.grid-link__container .product_grid-item a[href*="/products/"]',url,dartProduct),series:()=>''},
+        },collect:(doc,url)=>[...doc.querySelectorAll('.grid-uniform.grid-link__container .product_grid-item')].map(row=>{const a=row.querySelector('a[href*="/products/"]');return {url:a ? dartProduct(new URL(a.getAttribute('href'),url)) : '',title:text(row,'.grid-link__title')};}).filter(row=>row.url && row.title),series:()=>''},
     ];
   }
   function publisherAdaptersExtra() {
@@ -329,8 +329,12 @@
     const dalaProduct = u => u.hostname === 'www.dalapub.com' && u.pathname === '/Publication/Detail' &&
       /^[A-Za-z0-9 _-]+$/.test(u.searchParams.get('code') || '')
       ? 'https://www.dalapub.com/Publication/Detail?code=' + encodeURIComponent(u.searchParams.get('code')) : '';
-    const citiProduct = u => u.hostname === 'www.citicomics-shop.com' && /^\/products\/[^/]+\/?$/.test(u.pathname)
-      ? 'https://www.citicomics-shop.com' + u.pathname.replace(/\/$/, '') : '';
+    const citiProduct = u => {
+      if(u.hostname!=='www.citicomics-shop.com' || !/^\/products\/[^/]+\/?$/.test(u.pathname)) return '';
+      const variant=u.searchParams.get('bcd_variant');
+      if(variant!==null && !/^[a-f0-9]{24}$/.test(variant)) return '';
+      return 'https://www.citicomics-shop.com'+u.pathname.replace(/\/$/,'')+(variant?'?bcd_variant='+variant:'');
+    };
     const futureProduct = u => u.hostname === 'future-digi.com' && u.pathname === '/index.php' &&
       u.searchParams.get('route') === 'product/product' && /^\d+$/.test(u.searchParams.get('product_id') || '')
       ? 'https://future-digi.com/index.php?route=product/product&product_id=' + u.searchParams.get('product_id') : '';
@@ -355,14 +359,15 @@
         if (!out.title || !out.isbn) out.blocked = '未取得单本书籍资料';
         return out;
       },
-      collect:(doc,url) => collect(doc,url,dalaProduct,'main a[href*="/Publication/Detail"]'),
+      collect:(doc,url) => [...doc.querySelectorAll('main .detail-group a[href*="/Publication/Detail"]')].map(a=>({url:dalaProduct(new URL(a.getAttribute('href'),url)),title:txt(a.closest('.detail-group'),'.book').replace(/^書名\s*\|\s*/,'')})).filter(row=>row.url && row.title),
       series:() => ''
     }, {
       key:'citicomics', label:'文化傳信', region:'HK', hosts:['www.citicomics-shop.com'],
       coverHosts:['img.shoplineapp.com','shoplineimg.com'], product:citiProduct,
       list:u => u.hostname === 'www.citicomics-shop.com' && (u.pathname === '/products' || /^\/categories\//.test(u.pathname)),
-      parse(doc) {
+      parse(doc,url) {
         const out = raw('文化傳信');
+        if(new URL(url).searchParams.has('bcd_variant')) return citiVariantRaw(doc,url);
         const data = jsonProducts(doc).find(v => clean(v.name) === txt(doc,'h1.Product-title'));
         out.title = txt(doc,'h1.Product-title');
         const summary = doc.querySelector('.Product-summary, .Product-shortDescription, .product-summary');
@@ -388,7 +393,7 @@
           Object.assign(out,{volume_number:'全',volume_sequence_format:'single',published_volume_count:1,serial_status:'completed'});
         return out;
       },
-      collect:(doc,url) => collect(doc,url,citiProduct,'a[href*="/products/"]'),
+      collect:(doc,url) => [...doc.querySelectorAll('.ProductList-list .product-item a.Product-item[href]')].map(a=>({url:citiProduct(new URL(a.getAttribute('href'),url)),title:txt(a,'.title')})).filter(row=>row.url && row.title),
       series:() => ''
     }, {
       key:'future', label:'未来数位', region:'TW', hosts:['future-digi.com'], coverHosts:['future-digi.com'],
@@ -963,14 +968,59 @@
   function regionFromIsbn(code) {
     return /^(978626|978957|978986)/.test(code) ? 'TW' : /^(978962|978988)/.test(code) ? 'HK' : /^9787/.test(code) ? 'CN' : /^9784/.test(code) ? 'JP' : 'UNKNOWN';
   }
+  function citiBaseUrl(value) {
+    const u=new URL(value);u.searchParams.delete('bcd_variant');return u.href;
+  }
+  function citiProductData(doc) {
+    for(const script of doc.querySelectorAll('script:not([src])')) {
+      const match=script.textContent.match(/app\.value\(['"]product['"],\s*(\{[\s\S]*?\})\s*\);/);
+      if(!match) continue;
+      try {const data=JSON.parse(match[1]);if(Array.isArray(data.field_titles) && Array.isArray(data.variations))return data;}
+      catch { /* Read the public JSON value only; never execute page scripts. */ }
+    }
+    return null;
+  }
+  function citiVariants(doc,value) {
+    const data=citiProductData(doc);if(!data)return [];
+    const names=data.field_titles.map(v=>clean(v.name_translations?.['zh-hant']));
+    const bookIndex=names.indexOf('書目名稱'), volumeIndex=names.indexOf('期數');
+    if(volumeIndex<0 || names.length!== (bookIndex<0 ? 1 : 2)) return [];
+    const base=citiBaseUrl(value), seen=new Set(), result=[];
+    for(const variant of data.variations) {
+      const fields=variant.fields_translations?.['zh-hant'];
+      if(!/^[a-f0-9]{24}$/.test(variant.key) || seen.has(variant.key) || !Array.isArray(fields))continue;
+      const book=clean(bookIndex<0 ? data.title_translations?.['zh-hant'] : fields[bookIndex]), volume=clean(fields[volumeIndex]);
+      if(!book || !volume)continue;
+      const url=new URL(base);url.searchParams.set('bcd_variant',variant.key);url.hash='';
+      seen.add(variant.key);result.push({url:url.href,title:book+' '+volume,book,volume,variant});
+    }
+    return result;
+  }
+  function citiVariantRaw(doc,value) {
+    const row=citiVariants(doc,value).find(v=>v.variant.key===new URL(value).searchParams.get('bcd_variant'));
+    if(!row)throw failure('本页未提供所选书目／期数的公开数据，请核对原站选项。');
+    const position=row.volume.match(/^(上|中|下)(?:卷|冊)?$/), numeric=row.volume.match(/^(?:第)?(\d+)(?:期|卷|冊)$/), single=/^全[一1](?:冊|卷)$/.test(row.volume);
+    const volume=position?.[1] || (numeric ? String(Number(numeric[1])) : single ? '全' : '');
+    const hard=/硬皮/.test(row.book), collector=/珍藏本/.test(row.book);
+    return {title:row.title,work_title:row.book,volume_number:volume,
+      volume_sequence_format:position ? 'upper_lower' : single ? 'single' : 'numeric',
+      publisher:'文化傳信',authors:[],isbn:'',description:'',
+      edition_type:collector?'collector':'tankobon',edition_label:collector ? '珍藏本'+(hard?'／限量硬皮版':'') : identity(row.book).edition_label,
+      print_variant:/限量/.test(row.book)?'limited':'standard',
+      cover:row.variant.media?.images?.original?.url || '',list_price:row.variant.price?.dollars ?? null,currency:row.variant.price?.currency_iso || '',
+      metadata_note:'同页书目：'+row.book+'；期数：'+row.volume+'；原站变体 ID：'+row.variant.key+'。未将整页简介或其他书目的作者、书号套用到本册。',
+      blocked:volume?'':'原站变体册号尚未识别，请核对后补录'};
+  }
   function parsePublisher(html,id,finalUrl=productUrl(id),apiData=null,publicSearchCode=null) {
     const ref=publisherRef(id);
-    if(!ref || productId(finalUrl)!==id) throw failure('出版社返回了其他页面，未保存；请打开商品核对。');
+    const variant=ref?.site.key==='citicomics' && new URL(ref.url).searchParams.has('bcd_variant');
+    const returned=variant ? productId(citiBaseUrl(finalUrl)) : productId(finalUrl), expected=variant ? productId(citiBaseUrl(ref.url)) : id;
+    if(!ref || returned!==expected) throw failure('出版社返回了其他页面，未保存；请打开商品核对。');
     const doc=new DOMParser().parseFromString(html,'text/html');
     if(/Just a moment|Attention Required|安全验证|安全驗證/i.test(doc.title) || doc.querySelector('form[action*="login"],input[name*="captcha"],#challenge-form'))
       throw failure('出版社需要登录或人工验证，请在本站完成后继续。','challenge');
     const canonical=doc.querySelector('link[rel="canonical"]')?.href;
-    if(canonical && productId(new URL(canonical,finalUrl).href)!==id) throw failure('出版社商品编号与页面不一致，未保存。');
+    if(canonical && productId(new URL(canonical,finalUrl).href)!==expected) throw failure('出版社商品编号与页面不一致，未保存。');
     const raw=apiData && ref.site.parseApi ? ref.site.parseApi(apiData) : ref.site.parse(doc,ref.url,publicSearchCode);
     if(!raw || !clean(raw.title)) throw failure('出版社详情未加载完整，未缓存。请在商品页面等待加载后重试。');
     const title=clean(raw.title), parts=enrichIdentity(identity(title),doc,raw.description), {ebook,...fields}=parts;
@@ -979,6 +1029,7 @@
     const cover=raw.cover ? originalCover(new URL(raw.cover,ref.url).href) : '';
     const rate=clean(raw.rating);
     const entry={...fields,work_title:clean(raw.work_title || parts.work_title).slice(0,240),volume_title:title.slice(0,240),
+      edition_type:raw.edition_type || parts.edition_type,edition_label:raw.edition_label || parts.edition_label,print_variant:raw.print_variant || parts.print_variant,
       volume_number:clean(raw.volume_number || parts.volume_number),region:raw.region || ref.site.region,
       volume_sequence_format:raw.volume_sequence_format || parts.volume_sequence_format,
       published_volume_count:raw.published_volume_count ?? parts.published_volume_count,
@@ -1100,7 +1151,7 @@
     }
     return [...ids.values()]; // Never sweep recommendations or infer all when nothing is checked.
   }
-  function publisherDirectoryId(site,url) {
+  function publisherDirectoryId(site,url,legacy=false) {
     const u=new URL(url);u.hash='';u.pathname=u.pathname.replace(/\/page\/\d+\/?$/,'/').replace(/\/$/,'');
     for(const key of ['page','p','offset','limit','sort','order']) u.searchParams.delete(key);
     if(site.key==='kingstone') {
@@ -1109,6 +1160,9 @@
       u.pathname='/'+parts.slice(0,3).concat(filters.sort((a,b)=>a[0].localeCompare(b[0])).flat()).join('/');
     }
     if(site.key==='eslite') for(const key of ['start','display','exp']) u.searchParams.delete(key);
+    if(!legacy && site.key==='sanmin') u.searchParams.delete('pi');
+    if(!legacy && site.key==='citicomics') for(const key of ['sort_by','order_by']) u.searchParams.delete(key);
+    if(!legacy && site.key==='dala' && !u.searchParams.has('k')) u.searchParams.set('k','comic');
     if(site.key==='taaze') {
       for(const key of ['nowPage','layout']) u.searchParams.delete(key);
       for(const key of ['prodKind','prodCatId','catId','saleDiscStart','saleDiscEnd','salePriceStart','salePriceEnd','publishDateStart','publishDateEnd','prodRank','addMarkFlg','force','catFocus','orgFocus','mainCatFocus','catNmFocus','catIdFocus'])
@@ -1132,7 +1186,8 @@
   }
   function nextListingPage(doc,base) {
     const key=listingDirectoryId(base);
-    for(const a of doc.querySelectorAll('a[rel="next"],a.next[rel="change_page"][href],.pagination .pageNext a[href],.paginator .next a[href],.pagination .next a[href],a.next.page-numbers[href]')) {
+    const controls=[...doc.querySelectorAll('a.jq-page-option[rel="next"]'),...doc.querySelectorAll('a[rel="next"],a.next[rel="change_page"][href],.PageNumBar .Next a[href],.ProductList-paginator a[href]:has(.fa-angle-right),.pagination-custom a[title="Next"][href],.pagination .pageNext a[href],.paginator .next a[href],.pagination .next a[href],a.next.page-numbers[href]')];
+    for(const a of controls) {
       try {
         const u=new URL(a.getAttribute('href'),base);u.hash='';
         if(u.protocol==='https:' && !u.username && !u.password && !u.port && u.origin===new URL(base).origin && u.href!==base && listingDirectoryId(u.href)===key) return u.href;
@@ -1247,7 +1302,7 @@
 
   // CommonJS exposes pure functions to the offline regression harness, not to the webpage.
   if (typeof module === 'object' && module.exports) {
-    module.exports = {SITE_ADAPTERS,sanminCover,parsePublisher,parseBook,parseDouban,productId,productUrl,identity,numberText,isbn13,trimFormat,originalCover,collectItems,searchWorkbook,localPackage,jpeg,retryAfter,sortItems,inferSets,prepareSets,setKey,seriesPage,seriesUrl,canonicalPublisher,relatedSeries,supplementIds,directoryGaps,preferPhysicalSelection,booksSearchDirectoryId};
+    module.exports = {SITE_ADAPTERS,sanminCover,parsePublisher,parseBook,parseDouban,productId,productUrl,identity,numberText,isbn13,trimFormat,originalCover,collectItems,searchWorkbook,localPackage,jpeg,retryAfter,sortItems,inferSets,prepareSets,setKey,seriesPage,seriesUrl,canonicalPublisher,relatedSeries,supplementIds,directoryGaps,preferPhysicalSelection,booksSearchDirectoryId,citiVariants};
     return;
   }
   const state = {items:[], busy:false, stop:false, abort:null, nextAt:0, cooldownUntil:0, covers:new Map(), message:'核对选中的卷册，再读取资料。', warning:'', blockedUrl:'', directory:null, dirty:new Set(), auto:new Map(), currentIds:new Set(), selectionChanged:false, combine:false, combineApproved:''};
@@ -1541,13 +1596,14 @@
     if(!isSearchResults(location.href)) {
       if(!CURRENT_SITE || productId(location.href) || !CURRENT_SITE.list(new URL(location.href))) return [];
       const ids=new Set(collectItems(document).map(item=>item.id)), seen=new Set();
-      return [...document.querySelectorAll('a[href]')].flatMap(a=>{
+      const anchors=CURRENT_SITE.key==='citicomics' ? document.querySelectorAll('.ProductList-list .product-item a.Product-item[href]') : CURRENT_SITE.key==='dala' ? document.querySelectorAll('main .detail-group a[href*="/Publication/Detail"]') : CURRENT_SITE.key==='dart' ? document.querySelectorAll('.grid-link__container .product_grid-item a[href*="/products/"]') : CURRENT_SITE.key==='kodansha' ? document.querySelectorAll('[data-scroll-anchor="publications"] a[href*="/comic/products/"]') : CURRENT_SITE.key==='shogakukan' ? document.querySelectorAll('#main .bookBox01 p.ttl a[href]') : document.querySelectorAll('a[href]');
+      return [...anchors].flatMap(a=>{
         if(a.closest('#bcd-panel')) return [];
         const id=productId(a.href);
         if(!ids.has(id) || seen.has(id)) return [];
         seen.add(id);
-        const row=a.closest('li.product,.productBox,.single-item,.product-thumb,.product_grid-item,.ProductList-item') || a.parentElement;
-        return [{row,container:row,id}];
+        const row=(CURRENT_SITE.key==='kodansha' ? a.closest('li') : null) || a.closest('li.product,.productBox,.single-item,.product-thumb,.product_grid-item,.ProductList-item,.product-item,li.clearfix') || a.parentElement;
+        return [{row,container:CURRENT_SITE.key==='chingwin' ? row.querySelector('.box-front .nameBox') || row : row,id}];
       });
     }
     const rule=SEARCH_CHOICES[CURRENT_SITE?.key];
@@ -1598,7 +1654,7 @@
     ui.listSummary.textContent=`查看 / 调整卷册选择与逐本资料 · ${scope.length} 已选`;
     ui.count.textContent=`已选 ${scope.length} / 已载入 ${state.items.length} 项`+(state.directory ? ` · ${state.directory.complete?'目录已读完（仅书目）':'目录未读完'}` : '')+`\n已选详情已读 ${ready} / ${scope.length} 本 · 待读 ${scope.length-ready} 本`;
     if(unreadSelectionHint()) ui.count.textContent+='\n'+unreadSelectionHint();
-    for (const item of state.items.filter(item=>!ui.onlySelected?.checked || item.selected)) {
+    for (const item of state.items.filter(item=>(!ui.onlySelected?.checked || item.selected) && (!ui.variantBook?.value || item.title.startsWith(ui.variantBook.value+' ')))) {
       const row=el('div',null,ui.list); row.className='book';
       const label=el('label',null,row), check=el('input',null,label); check.type='checkbox'; check.checked=item.selected; check.disabled=state.busy;
       const rec=item.record; el('span',rec?.title || item.title,label);
@@ -1773,7 +1829,9 @@
   }
   function boot() {
     if(document.getElementById('bcd-panel')) return;
-    const id=productId(location.href), booksSearch=isBooksSearch(location.href), searchResults=isSearchResults(location.href), isSeries=CURRENT_SITE ? CURRENT_SITE.list(new URL(location.href)) : DOUBAN ? /^\/series\/\d+\/?$/.test(location.pathname) : booksSearch || location.hostname==='activity.books.com.tw' && location.pathname.startsWith('/crosscat/show/');
+    const variants=CURRENT_SITE?.key==='citicomics' && productId(location.href) ? citiVariants(document,location.href) : [];
+    const id=variants.length ? '' : productId(location.href), booksSearch=isBooksSearch(location.href), searchResults=isSearchResults(location.href), isSeries=variants.length>0 || (CURRENT_SITE ? CURRENT_SITE.list(new URL(location.href)) : DOUBAN ? /^\/series\/\d+\/?$/.test(location.pathname) : booksSearch || location.hostname==='activity.books.com.tw' && location.pathname.startsWith('/crosscat/show/'));
+    if(variants.length>MAX_ITEMS) throw failure('本页书目／期数组合超过 300 项，请缩小范围后采集。');
     if(!id && !isSeries) return;
     state.nextListing=isSeries ? nextListingPage(document,location.href) : '';
     if(id) {
@@ -1783,21 +1841,23 @@
       state.items=[item];
       if(CURRENT_SITE?.detailApi && !item.record) {item.error='';state.blockedUrl='';state.message='本页使用官网公开书目接口，请点击“读取 / 继续读取所选资料”，不会提前联网。';}
     } else {
-      const current=collectItems(document); state.currentIds=new Set(current.map(i=>i.id));
-      state.items=current.map(item=>({...item,selected:!searchResults && !bundle(item),record:cacheRead(item.id)}));
+      const current=variants.length ? variants.map(row=>{const id=productId(row.url), record=readCurrentProduct(id);cacheWrite(record);return {id,title:row.title,selected:new URL(location.href).searchParams.get('bcd_variant')===row.variant.key,record,error:''};}) : collectItems(document); state.currentIds=new Set(current.map(i=>i.id));
+      state.items=current.map(item=>({...item,selected:variants.length ? item.selected : !searchResults && !bundle(item),record:cacheRead(item.id)}));
+      if(variants.length)state.message=`已识别本页 ${variants.length} 个书目／期数组合，请逐项勾选；不同作品与版本分别归组，不代表全套完整。`;
       if(DOUBAN) {
         const sid=location.pathname.match(/\d+/)[0];
         try {
           const parsed=seriesPage(document,location.href,sid);
           state.directory={id:sid,done:[parsed.url],pending:parsed.links.filter(u=>u!==parsed.url),complete:parsed.links.every(u=>u===parsed.url)};
         } catch(err) {state.message=err.message;}
-      } else state.directory={id:booksSearch ? booksSearchDirectoryId(location.href) : CURRENT_SITE ? publisherDirectoryId(CURRENT_SITE,location.href) : 'books-'+location.pathname.split('/').filter(Boolean).pop(),done:[location.href],pending:[],complete:!booksSearch && !CURRENT_SITE && !document.querySelector('.paginator a[href],a[rel="next"]') && !/部分(?:版本或)?(?:集數|集数|冊|册).*無法|部分.*无法/.test([...document.querySelectorAll('h1,h2,h3')].map(n=>clean(n.textContent)).join(' '))};
+      } else state.directory={id:variants.length ? 'citicomics-variants:'+productId(citiBaseUrl(location.href)) : booksSearch ? booksSearchDirectoryId(location.href) : CURRENT_SITE ? publisherDirectoryId(CURRENT_SITE,location.href) : 'books-'+location.pathname.split('/').filter(Boolean).pop(),done:[location.href],pending:[],complete:!booksSearch && !CURRENT_SITE && !document.querySelector('.paginator a[href],a[rel="next"]') && !/部分(?:版本或)?(?:集數|集数|冊|册).*無法|部分.*无法/.test([...document.querySelectorAll('h1,h2,h3')].map(n=>clean(n.textContent)).join(' '))};
       if(state.directory) {
         // 升级时迁移当前地址的旧草稿；已有新草稿优先，避免恢复已取消的勾选。
-        const saved=readStore('bcd-series-v1:'+state.directory.id,null) ?? (booksSearch ? readStore('bcd-series-v1:'+legacyBooksSearchDirectoryId(location.href),null) : null);
+        const legacyId=variants.length ? '' : booksSearch ? legacyBooksSearchDirectoryId(location.href) : CURRENT_SITE ? publisherDirectoryId(CURRENT_SITE,location.href,true) : '';
+        const saved=readStore('bcd-series-v1:'+state.directory.id,null) ?? (legacyId && legacyId!==state.directory.id ? readStore('bcd-series-v1:'+legacyId,null) : null);
         if(saved && Date.now()-saved.savedAt<86400000 && Array.isArray(saved.items) && saved.items.length<=MAX_ITEMS) {
           const old=saved.items.filter(i=>typeof i.id==='string' && productId(productUrl(i.id))===i.id && sameSiteId(i.id)).map(i=>({...i,record:cacheRead(i.id),error:''}));
-          state.items=old; mergeItems(current);
+          state.items=old; mergeItems(current,DOUBAN);
           if(DOUBAN && saved.directory?.id===state.directory.id) {
             const order=new URL(state.directory.done[0]).searchParams.get('order');
             const valid=values=>(Array.isArray(values)?values:[]).map(u=>seriesUrl(u,location.href,state.directory.id)).filter(u=>u && new URL(u).searchParams.get('order')===order);
@@ -1871,7 +1931,7 @@
         const items=collectItems(document);mergeItems(items);state.currentIds=new Set(items.map(i=>i.id));state.selectionChanged=true;
         progress(`已载入 ${items.length} 条本页套书目录，请选择所需卷册；不代表全套完整。`);render();
       },selection).dataset.idle='true';
-    } else el('p',searchResults ? '搜索结果可能包含其他作品。先勾选所需卷册，再分析或读取；不读取推荐区，翻页后保留选择，缺少的册可补链接。' : CURRENT_SITE ? '只读取当前页面已显示的书目，不保证全套完整；不同作品 / 版本请取消勾选。可翻页后刷新本页书目或手动补卷链接。' : DOUBAN ? '默认选择已识别卷册（不含合集）。先读取完整目录，再核对选择。' : '默认选择当前系列的非合集卷册，请核对。',selection);
+    } else el('p',variants.length ? '本页包含多个书目／期数组合。展开卷册列表勾选所需版本与册号；采用该变体的封面和价格，缺失作者、书号与简介请补录。' : searchResults ? '搜索结果可能包含其他作品。先勾选所需卷册，再分析或读取；不读取推荐区，翻页后保留选择，缺少的册可补链接。' : CURRENT_SITE ? '只读取当前页面已显示的书目，不保证全套完整；不同作品 / 版本请取消勾选。可翻页后刷新本页书目或手动补卷链接。' : DOUBAN ? '默认选择已识别卷册（不含合集）。先读取完整目录，再核对选择。' : '默认选择当前系列的非合集卷册，请核对。',selection);
     if(DOUBAN && isSeries) {const readDirectory=button('读取 / 继续读取整个丛书目录',()=>void loadDirectory(),selection);readDirectory.className='primary';readDirectory.dataset.idle='true';}
     const combine=el('details',null,selection);combine.className='combine-books';combine.open=state.combine;
     el('summary','多册合成作品',combine);
@@ -1888,6 +1948,7 @@
     button('返回普通导出',()=>{state.combine=false;state.combineApproved='';progress('已返回普通导出，卷册选择和资料保留。');render();},combine).dataset.idle='true';
     ui.count=el('p','',body);nav.after(ui.count);
     const listDetails=el('details',null,selection);listDetails.className='volume-list';listDetails.open=!searchResults;ui.listDetails=listDetails;
+    if(variants.length)ui.variantBook=selectControl('书目 / 版本',[['','全部书目'],...[...new Set(variants.map(row=>row.book))].map(book=>[book,book])],'',listDetails,render);
     ui.listSummary=el('summary','查看 / 调整卷册选择与逐本资料',listDetails);
     const filterLabel=el('label',null,listDetails);ui.onlySelected=el('input',null,filterLabel);ui.onlySelected.type='checkbox';el('span','仅看已选卷册',filterLabel);ui.onlySelected.addEventListener('change',render);
     ui.list=el('div',null,listDetails);
@@ -1907,7 +1968,7 @@
     const includeLabel=el('label',null,selectionOptions); ui.includeBundles=el('input',null,includeLabel); ui.includeBundles.type='checkbox';
     el('span','全选时包含合集／盒装／合售（仅供核对）',includeLabel);
     const readActions=el('div',null,selectionOptions); readActions.className='actions';
-    if(isSeries && !DOUBAN) {
+    if(isSeries && !DOUBAN && !variants.length) {
       const paging=el('div',null,selection);paging.className='actions';actions.after(paging);
       ui.nextListing=button(CURRENT_SITE?.key==='eslite'?'前往下一页 · 保留已选':'加载下一页书目',()=>{
         if(CURRENT_SITE?.key==='eslite') {
@@ -1928,7 +1989,7 @@
       el('p','全选包含其他分页已载入卷册；合集按上方开关处理。',selectionOptions);
     }
     if(isSeries) button('刷新本页书目',() => {
-      const items=collectItems(document); state.currentIds=new Set(items.map(i=>i.id));
+      const items=variants.length ? citiVariants(document,location.href).map(row=>({id:productId(row.url),title:row.title,selected:false})) : collectItems(document); state.currentIds=new Set(items.map(i=>i.id));
       try {
         if(DOUBAN) {
           const sid=location.pathname.match(/\d+/)[0], parsed=seriesPage(document,location.href,sid);
@@ -1937,10 +1998,10 @@
           dir.pending=[...new Set([...dir.pending,...parsed.links])].filter(u=>!dir.done.includes(u));
           dir.complete=!dir.pending.length; state.directory=dir;
         }
-        mergeItems(items);progress('已合并当前页书目，其他页的勾选与修改保留。');
+        mergeItems(items,DOUBAN);progress('已合并当前页书目，其他页的勾选与修改保留。');
       } catch(err) {if(state.directory) state.directory.complete=false;progress(err.message);}
       render();
-    },isSeries && !DOUBAN ? ui.nextListing.parentElement : readActions).dataset.idle='true';
+    },isSeries && !DOUBAN && !variants.length ? ui.nextListing.parentElement : readActions).dataset.idle='true';
     ui.work=inputControl('统一作品名', '',settings); ui.work.maxLength=240; ui.work.placeholder='留空保留各卷作品名';
     ui.authors=inputControl('统一作者','',settings); ui.authors.maxLength=500;ui.authors.placeholder='读取后自动填写，冲突时保留各卷';
     ui.publisher=inputControl('统一出版社','',settings); ui.publisher.maxLength=160;
@@ -1990,9 +2051,10 @@
       render();
     });
     render();
-    if(searchResults && ['eslite','taaze'].includes(CURRENT_SITE?.key)) {
+    const dynamicRows=searchResults && ['eslite','taaze'].includes(CURRENT_SITE?.key) ? SEARCH_CHOICES[CURRENT_SITE.key].rows : isSeries && CURRENT_SITE?.key==='chingwin' ? '.productBox' : isSeries && CURRENT_SITE?.key==='shogakukan' ? '#main .bookBox01 li.clearfix' : isSeries && CURRENT_SITE?.key==='kodansha' ? '[data-scroll-anchor="publications"] li' : '';
+    if(dynamicRows) {
       // These search pages load or replace cards after document-idle/view changes.
-      const selector=SEARCH_CHOICES[CURRENT_SITE.key].rows; let pending;
+      const selector=dynamicRows; let pending;
       const observer=new MutationObserver(changes=>{
         const relevant=changes.some(change=>{
           const target=change.target.nodeType===1 ? change.target : change.target.parentElement;
@@ -2009,7 +2071,7 @@
               document.querySelectorAll('.bcd-search-choice').forEach(n=>n.remove());document.querySelectorAll('.bcd-card-shell').forEach(n=>n.replaceWith(...n.children));panel.remove();
               Object.assign(state,{items:[],directory:null,dirty:new Set(),auto:new Map(),selectionChanged:false,combine:false,restoredManual:{},warning:'',blockedUrl:''});boot();return;
             }
-            const items=collectItems(document); state.currentIds=new Set(items.map(item=>item.id)); mergeItems(items); render();
+            const items=collectItems(document); state.currentIds=new Set(items.map(item=>item.id)); mergeItems(items,false); render();
           } catch(err) {progress(err.message);}
         },100);
       });observer.observe(document.body,{childList:true,subtree:true,characterData:true});

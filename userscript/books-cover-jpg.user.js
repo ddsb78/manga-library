@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.7.7
+// @version      2.7.8
 // @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持读册生活、金石堂、三民、豆瓣、出版社及博客来手动采集。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -1117,6 +1117,13 @@
     u.searchParams.sort();return site.key+':'+u.pathname+u.search;
   }
   function booksSearchDirectoryId(value) {
+    const u=new URL(value), parts=u.pathname.slice('/search/query/'.length).split('/').filter(Boolean), params=new URLSearchParams();
+    // 博客来原站翻页会重排路径参数；页码、显示模式不改变搜索目录。
+    for(let i=0;i<parts.length;i+=2) if(!['page','v'].includes(parts[i])) params.append(parts[i],parts[i+1] || '');
+    for(const [key,val] of u.searchParams) if(!['page','v'].includes(key)) params.append(key,val);
+    params.sort();return 'books-search:/search/query/?'+params.toString();
+  }
+  function legacyBooksSearchDirectoryId(value) {
     const u=new URL(value);u.hash='';u.pathname=u.pathname.replace(/\/page\/\d+(?=\/|$)/,'/page/1');u.searchParams.delete('page');u.searchParams.sort();return 'books-search:'+u.pathname+u.search;
   }
   function listingDirectoryId(value) {
@@ -1125,7 +1132,7 @@
   }
   function nextListingPage(doc,base) {
     const key=listingDirectoryId(base);
-    for(const a of doc.querySelectorAll('a[rel="next"],.pagination .pageNext a[href],.paginator .next a[href],.pagination .next a[href],a.next.page-numbers[href]')) {
+    for(const a of doc.querySelectorAll('a[rel="next"],a.next[rel="change_page"][href],.pagination .pageNext a[href],.paginator .next a[href],.pagination .next a[href],a.next.page-numbers[href]')) {
       try {
         const u=new URL(a.getAttribute('href'),base);u.hash='';
         if(u.protocol==='https:' && !u.username && !u.password && !u.port && u.origin===new URL(base).origin && u.href!==base && listingDirectoryId(u.href)===key) return u.href;
@@ -1786,7 +1793,8 @@
         } catch(err) {state.message=err.message;}
       } else state.directory={id:booksSearch ? booksSearchDirectoryId(location.href) : CURRENT_SITE ? publisherDirectoryId(CURRENT_SITE,location.href) : 'books-'+location.pathname.split('/').filter(Boolean).pop(),done:[location.href],pending:[],complete:!booksSearch && !CURRENT_SITE && !document.querySelector('.paginator a[href],a[rel="next"]') && !/部分(?:版本或)?(?:集數|集数|冊|册).*無法|部分.*无法/.test([...document.querySelectorAll('h1,h2,h3')].map(n=>clean(n.textContent)).join(' '))};
       if(state.directory) {
-        const saved=readStore('bcd-series-v1:'+state.directory.id,null);
+        // 升级时迁移当前地址的旧草稿；已有新草稿优先，避免恢复已取消的勾选。
+        const saved=readStore('bcd-series-v1:'+state.directory.id,null) ?? (booksSearch ? readStore('bcd-series-v1:'+legacyBooksSearchDirectoryId(location.href),null) : null);
         if(saved && Date.now()-saved.savedAt<86400000 && Array.isArray(saved.items) && saved.items.length<=MAX_ITEMS) {
           const old=saved.items.filter(i=>typeof i.id==='string' && productId(productUrl(i.id))===i.id && sameSiteId(i.id)).map(i=>({...i,record:cacheRead(i.id),error:''}));
           state.items=old; mergeItems(current);

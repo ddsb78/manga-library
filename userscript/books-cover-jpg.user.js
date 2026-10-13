@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.7.6
+// @version      2.7.7
 // @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持读册生活、金石堂、三民、豆瓣、出版社及博客来手动采集。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -11,7 +11,6 @@
 // @match        https://activity.books.com.tw/crosscat/show/*
 // @match        https://search.books.com.tw/search/query/*
 // @match        https://www.kingstone.com.tw/basic/*
-// @match        https://www.kingstone.com.tw/monthpublish/book/*
 // @match        https://www.kingstone.com.tw/search/key/*
 // @match        https://www.sanmin.com.tw/product/index/*
 // @match        https://www.sanmin.com.tw/search*
@@ -163,7 +162,7 @@
           for(const script of doc.querySelectorAll('script')) {
             if(!/renderGallery\s*\(/.test(script.textContent)) continue;
             const supplied=script.textContent.match(/\burls\s*:\s*(\[(?:\s*"(?:[^"\\]|\\.)*"\s*,?)*\])/);
-            if(supplied) {try {raw.cover=abs(JSON.parse(supplied[1])[0] || raw.cover,url);} catch {}}
+            if(supplied) {try {raw.cover=abs(JSON.parse(supplied[1])[0] || raw.cover,url);} catch { /* Ignore malformed optional page metadata. */ }}
           }
           const intro=doc.querySelector('.ckeditor');
           if(intro) {
@@ -192,7 +191,7 @@
           const value=key=> {const m=source.match(new RegExp('"'+key+'"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*"|[\\d.]+)'));try{return m ? JSON.parse(m[1]) : null;}catch{return null;}};
           const fragment=new DOMParser().parseFromString(value('ShortDescription') || '', 'text/html');
           const f=fields(fragment.querySelectorAll('li'));
-          let name='';for(const script of doc.querySelectorAll('script[type="application/ld+json"]')) {try{const ld=JSON.parse(script.textContent);if(ld['@type']==='Product') name=ld.name || '';}catch{}}
+          let name='';for(const script of doc.querySelectorAll('script[type="application/ld+json"]')) {try{const ld=JSON.parse(script.textContent);if(ld['@type']==='Product') name=ld.name || '';}catch{ /* Ignore malformed optional page metadata. */ }}
           const raw=defaults(value('Title') || name,'尖端');
           const suppliedCover=[...doc.querySelectorAll('meta[property="og:image"]')].map(n=>n.content).find(value=>/^https:\/\//.test(value)) || '';
           return Object.assign(raw,{authors:authors(f['作者']),isbn:f['條碼'],pub_date:date(f['上市日']),spec:f['規格'] || '',rating:f['等級'] || '',list_price:value('SuggestPrice'),cover:suppliedCover});
@@ -245,13 +244,13 @@
     const kodProduct=product('www.kodansha.co.jp',/^\/comic\/products\/\d+\/?$/);
     const dartProduct=u=>u.hostname==='www.d-art-shop.tw' && /^\/(?:collections\/[^/]+\/)?products\/[^/]+\/?$/.test(u.pathname) ? `https://www.d-art-shop.tw/products/${u.pathname.split('/').filter(Boolean).at(-1)}` : '';
     const links=(doc,selector,url,canonical)=>{
-      const found=new Map();for(const a of doc.querySelectorAll(selector)){let value='';try{value=canonical(new URL(a.getAttribute('href'),url));}catch{}if(value && !found.has(value))found.set(value,{url:value,title:clean(a.textContent || a.querySelector('img')?.alt)});}return [...found.values()];
+      const found=new Map();for(const a of doc.querySelectorAll(selector)){let value='';try{value=canonical(new URL(a.getAttribute('href'),url));}catch{ /* Ignore malformed optional page metadata. */ }if(value && !found.has(value))found.set(value,{url:value,title:clean(a.textContent || a.querySelector('img')?.alt)});}return [...found.values()];
     };
     const inertia=doc=>{try{return JSON.parse(doc.querySelector('[data-page]')?.getAttribute('data-page') || '{}').props || {};}catch{return {};}};
     return [
       {key:'smanga',label:'集英社 S-MANGA',region:'JP',hosts:['www.s-manga.net'],coverHosts:['dosbg3xlm0x1t.cloudfront.net'],product:smProduct,
         list:u=>u.hostname==='www.s-manga.net' && u.pathname==='/search/search.html' && /^\d+$/.test(u.searchParams.get('seriesid') || '') && !u.searchParams.get('digital'),
-        parse(doc,url){
+        parse(doc){
           const raw=defaults(text(doc,'h1.bktitle') || text(doc,'.item-info h1'),'集英社');
           const paper=[...doc.querySelectorAll('.item-info-kamidigi li section')].find(n=>text(n,'h4')==='紙版');
           const info=clean(paper?.textContent), isbn=text(paper || doc,'#item-ISBN').replace(/^ISBN\s*[:：]\s*/i,'');
@@ -264,8 +263,8 @@
         parse(doc,url){
           const book=inertia(doc).book || {}, raw=defaults(clean(book.title),'小学馆');
           return Object.assign(raw,{work_title:clean(book.daihyo_shohin?.daihyo_name),volume_number:book.kansu ? String(book.kansu) : '',authors:(book.auth_notations || []).map(a=>clean(a.auth_name)),isbn:book.isbn13_cd || book.isbn_cd || '',pub_date:date(book.publish_date),list_price:book.teika_now ?? null,spec:book.hankei || '',description:htmlText(doc,book.promo_contents?.[3]),cover:abs(book.image_url,url),blocked:!book.isbn_cd || book.product_type==='digital' ? '未找到实体书目资料，请核对版本' : ''});
-        },collect(doc,url){const books=inertia(doc).books, rows=Array.isArray(books)?books:books?.data || [];return rows.flatMap(b=>{let canonical='';try{canonical=shoProduct(new URL(b.url,url));}catch{}return canonical?[{url:canonical,title:clean(b.title)}]:[];});},
-        series(doc,url){const book=inertia(doc).book;return book?.has_zenkan && book?.daihyo_cd ? `https://www.shogakukan.co.jp/books/volume/${book.daihyo_cd}` : ''; }},
+        },collect(doc,url){const books=inertia(doc).books, rows=Array.isArray(books)?books:books?.data || [];return rows.flatMap(b=>{let canonical='';try{canonical=shoProduct(new URL(b.url,url));}catch{ /* Ignore malformed optional page metadata. */ }return canonical?[{url:canonical,title:clean(b.title)}]:[];});},
+        series(doc){const book=inertia(doc).book;return book?.has_zenkan && book?.daihyo_cd ? `https://www.shogakukan.co.jp/books/volume/${book.daihyo_cd}` : ''; }},
       {key:'kodansha',label:'讲谈社',region:'JP',hosts:['www.kodansha.co.jp'],coverHosts:['dvs-cover.kodansha.co.jp'],product:kodProduct,
         list:u=>u.hostname==='www.kodansha.co.jp' && /^\/titles\/\d+\/?$/.test(u.pathname),
         parse(doc){
@@ -297,7 +296,7 @@
     const lines = node => node ? String(node.innerText || node.textContent || '').trim() : '';
     const raw = publisher => ({title:'', authors:[], publisher, isbn:'', legacy_barcode:'',
       pub_date:'', description:'', spec:'', rating:'', list_price:'', currency:'', cover:''});
-    const field = (text, label) => clean((text.match(new RegExp(`(?:^|[\\n\\r])[ \\t　]*${label}[ \\t　]*[：:][ \\t　]*([^\\n\\r]+)`, 'i')) || [])[1]);
+    const field = (text, label) => clean((text.match(new RegExp(`(?:^|[\\n\\r])[ \\t\u3000]*${label}[ \\t\u3000]*[：:][ \\t\u3000]*([^\\n\\r]+)`, 'i')) || [])[1]);
     const section = (doc, heading) => {
       const node = [...doc.querySelectorAll('h2')].find(n => clean(n.textContent) === heading);
       return node?.parentElement?.nextElementSibling || null;
@@ -402,7 +401,7 @@
           throw failure('请先在未来数位完成已满十八岁确认，再刷新商品页读取。','login');
         const out=raw('未來數位'), heading=txt(doc.querySelector('#product')?.parentElement || doc,'h1');
         const sections=[...doc.querySelectorAll('#tab-description h3')];
-        const text=sections.filter(n=>/編[\s　]*號[：:]|產品規格/.test(n.textContent)).map(n=>{
+        const text=sections.filter(n=>/編[\s\u3000]*號[：:]|產品規格/.test(n.textContent)).map(n=>{
           const copy=n.cloneNode(true);copy.querySelectorAll('br').forEach(b=>b.replaceWith('\n'));return lines(copy);
         }).join('\n'), read=label=>field(text,label), category=read('類[\\s　]*別');
         out.title=heading.replace(/^\[\d{1,2}\/\d{1,2}\]\s*/,'').replace(/※\d{1,2}\/\d{1,2}出貨$/,'');
@@ -421,7 +420,7 @@
         const description=doc.querySelector('#tab-description')?.cloneNode(true);
         description?.querySelectorAll('img,script,style').forEach(n=>n.remove());
         for(const node of description?.querySelectorAll('h3') || []) {
-          if(/編[\s　]*號[：:]|產品規格|^\s*目錄[：:]/.test(node.textContent)) node.remove();
+          if(/編[\s\u3000]*號[：:]|產品規格|^\s*目錄[：:]/.test(node.textContent)) node.remove();
         }
         description?.querySelectorAll('br').forEach(n=>n.replaceWith('\n'));
         out.description=lines(description).split('\n').map(clean).filter(Boolean).join('\n');
@@ -459,7 +458,7 @@
     };
     return [{key:'kingstone',label:'金石堂',region:'TW',hosts:['www.kingstone.com.tw'],coverHosts:['cdn.kingstone.com.tw'],
       product:u=>/^\/basic\/[0-9]{13}\/?$/.test(u.pathname)?`${u.origin}${u.pathname.replace(/\/$/,'')}/`:null,
-      list:u=>/^\/(?:monthpublish\/book\/|search\/key\/)/.test(u.pathname),
+      list:u=>/^\/search\/key\//.test(u.pathname),
       collect:(doc)=>[...doc.querySelectorAll('.modFilterProd .mod_prod_card .pdnamebox a[href],li.displayunit h3 a[href]')].map(a=>({url:a.getAttribute('href'),title:clean(a.textContent)})),
       parse:doc=>{const f=kingstoneFields(doc),code=f.ISBN || f.EAN || '';const supplied=meta(doc,'og:image');
         return {title:text(doc,'h1'),authors:clean(f['作者']).split(/\s*[/／、;；]\s*/).filter(Boolean),publisher:f['出版社'],...valueCode(code),
@@ -485,7 +484,7 @@
     {key:'eslite',label:'诚品书店',region:'TW',hosts:['www.eslite.com'],coverHosts:['s.eslite.com','s2.eslite.com'],
       product:u=>/^\/product\/[0-9]+\/?$/.test(u.pathname)?`${u.origin}${u.pathname.replace(/\/$/,'')}`:null,
       list:u=>/^\/search\/?$/i.test(u.pathname),
-      collect:doc=>[...doc.querySelectorAll('.search-product-block .product-item a[href*="/product/"]')].map(a=>({url:a.getAttribute('href'),title:clean(a.textContent)||a.getAttribute('title')||a.querySelector('img')?.alt||''})),
+      collect:doc=>[...doc.querySelectorAll('.search-product-block .product-item')].map(row=>{const a=row.matches('a[href]')?row:row.querySelector('a[href*="/product/"]');return {url:a?.getAttribute('href'),title:clean(row.querySelector('.product-name')?.textContent)||a?.getAttribute('title')||a?.querySelector('img')?.alt||clean(a?.textContent)};}),
       parse:doc=>{
         const f={};for(const span of doc.querySelectorAll('.ec-col-12 > span')){const parts=clean(span.textContent).split(' / ');if(parts.length===2)f[parts[0]]=parts[1];}
         const row=selector=>clean(doc.querySelector(selector)?.lastElementChild?.textContent);
@@ -631,7 +630,7 @@
     for (const c of s) { if (c === '十' || c === '百') { sum += (n || 1) * (c === '十' ? 10 : 100); n = 0; } else n = digits[c]; }
     return String(sum + n);
   }
-  const stripEbookSuffix = title => clean(title).replace(/\s*(?:[（(【\[]\s*)?(?:電子書|电子书|e-?book)\s*(?:[）)】\]])?\s*$/i, '').trim();
+  const stripEbookSuffix = title => clean(title).replace(/\s*(?:[（(【[]\s*)?(?:電子書|电子书|e-?book)\s*(?:[）)】\]])?\s*$/i, '').trim();
   function namedPart(title) {
     for(const pattern of [/[([【]\s*([上中下])\s*(?:巻|卷|冊|册|部)?\s*[)\]】]/g, /\s+([上中下])\s*(?:巻|卷|冊|册|部)?(?=\s|[:：~～〜—–-]|$)/g]) {
       for(const match of title.matchAll(pattern)) {
@@ -660,12 +659,12 @@
     const editionType = edition?.[1] || 'tankobon';
     const editionLabel = edition ? (t.match(edition[0]) || [])[0] : '单行本';
     const print = /首刷限定/.test(t) ? 'first_print_limited' : /首刷/.test(t) ? 'first_print' : /限定/.test(t) ? 'limited' : 'standard';
-    t = t.replace(/[（(【\[][^）)】\]]*(?:首刷|限定)[^）)】\]]*[）)】\]]/g, '').trim();
+    t = t.replace(/[（(【[][^）)】\]]*(?:首刷|限定)[^）)】\]]*[）)】\]]/g, '').trim();
     // Editions occur before OR after the volume. Remove them before parsing,
     // but retain their separate identity so different editions never collapse.
     if (edition) t = t.replace(edition[0], '').replace(/\(\s*\)/g, '').trim();
     t = t.replace(/^[‧·・：:、\-－—\s]+/, '').replace(/[‧·・：:、\-－—\s]+$/, '').trim();
-    t = t.replace(/[【\[]([^】\]]+)[】\]]/g, '($1)');
+    t = t.replace(/[【[]([^】\]]+)[】\]]/g, '($1)');
     const completed = /(?:[(\s](?:完[結结]?|END)[)]?|[\d一二三四五六七八九十]+[)]?完[)]?)\s*$/i.test(t);
     t = t.replace(/[(]\s*(?:完[結结]?|END)\s*[)]\s*$|\s+(?:完[結结]?|END)\s*$/i, '').trim();
     let volume = '', sequence = 'numeric', count = null;
@@ -881,7 +880,7 @@
   }
   function description(doc) {
     for (const heading of doc.querySelectorAll('h2,h3,h4,h5,h6,[role="heading"]')) {
-      if (!/^(內容簡介|内容简介|內容简介|内容簡介)$/.test(clean(heading.textContent).replace(/[\s*＊★☆※:：【】\[\]]/g, ''))) continue;
+      if (!/^(內容簡介|内容简介|內容简介|内容簡介)$/.test(clean(heading.textContent).replace(/[\s*＊★☆※:：【】[\]]/g, ''))) continue;
       let parent = heading.parentElement;
       for (let depth = 0; depth < 3 && parent && !/^(BODY|HTML)$/.test(parent.tagName); depth++, parent = parent.parentElement) {
         const ordered = [...parent.querySelectorAll('*')], start = ordered.indexOf(heading);
@@ -935,7 +934,7 @@
     const rawCode = clean(field('ISBN') || field('EAN') || field('條碼') || field('条码') || ld.isbn);
     const isbn = isbn13(rawCode);
     const oldCode = !isbn && /^\d{10,13}$/.test(rawCode.replace(/[\s-]/g, '')) && !/^(978|979)/.test(rawCode) ? rawCode.replace(/[\s-]/g, '') : null;
-    const strip = text => clean(text).replace(/\s*(?:追蹤作者|追踪作者|新功能介紹|訂閱新書快訊|订阅新书快讯|相關資訊|相關介紹|[\[【]修改[\]】]).*$/, '').trim();
+    const strip = text => clean(text).replace(/\s*(?:追蹤作者|追踪作者|新功能介紹|訂閱新書快訊|订阅新书快讯|相關資訊|相關介紹|[[【]修改[\]】]).*$/, '').trim();
     const author = strip(field('作者'));
     const spec = field('規格') || field('规格');
     const rate = spec + ' ' + field('分級');
@@ -1102,8 +1101,14 @@
     return [...ids.values()]; // Never sweep recommendations or infer all when nothing is checked.
   }
   function publisherDirectoryId(site,url) {
-    const u=new URL(url);u.pathname=u.pathname.replace(/\/page\/\d+\/?$/,'/');
+    const u=new URL(url);u.hash='';u.pathname=u.pathname.replace(/\/page\/\d+\/?$/,'/').replace(/\/$/,'');
     for(const key of ['page','p','offset','limit','sort','order']) u.searchParams.delete(key);
+    if(site.key==='kingstone') {
+      const parts=u.pathname.split('/').filter(Boolean), filters=[];
+      for(let i=3;i<parts.length;i+=2) filters.push([parts[i],parts[i+1] || '']);
+      u.pathname='/'+parts.slice(0,3).concat(filters.sort((a,b)=>a[0].localeCompare(b[0])).flat()).join('/');
+    }
+    if(site.key==='eslite') for(const key of ['start','display','exp']) u.searchParams.delete(key);
     if(site.key==='taaze') {
       for(const key of ['nowPage','layout']) u.searchParams.delete(key);
       for(const key of ['prodKind','prodCatId','catId','saleDiscStart','saleDiscEnd','salePriceStart','salePriceEnd','publishDateStart','publishDateEnd','prodRank','addMarkFlg','force','catFocus','orgFocus','mainCatFocus','catNmFocus','catIdFocus'])
@@ -1113,6 +1118,37 @@
   }
   function booksSearchDirectoryId(value) {
     const u=new URL(value);u.hash='';u.pathname=u.pathname.replace(/\/page\/\d+(?=\/|$)/,'/page/1');u.searchParams.delete('page');u.searchParams.sort();return 'books-search:'+u.pathname+u.search;
+  }
+  function listingDirectoryId(value) {
+    const u=new URL(value), site=SITE_ADAPTERS.find(s=>s.hosts.includes(u.hostname));
+    return isBooksSearch(value) ? booksSearchDirectoryId(value) : site?.list(u) ? publisherDirectoryId(site,value) : '';
+  }
+  function nextListingPage(doc,base) {
+    const key=listingDirectoryId(base);
+    for(const a of doc.querySelectorAll('a[rel="next"],.pagination .pageNext a[href],.paginator .next a[href],.pagination .next a[href],a.next.page-numbers[href]')) {
+      try {
+        const u=new URL(a.getAttribute('href'),base);u.hash='';
+        if(u.protocol==='https:' && !u.username && !u.password && !u.port && u.origin===new URL(base).origin && u.href!==base && listingDirectoryId(u.href)===key) return u.href;
+      } catch { /* Only explicit links within the same listing are paging controls. */ }
+    }
+    return '';
+  }
+  async function loadNextListingPage() {
+    if(state.busy || !state.nextListing) return;
+    const target=state.nextListing;state.busy=true;state.stop=false;render();
+    try {
+      progress('正在加载下一页书目，已有勾选保留…');
+      const res=await request(target);
+      if(listingDirectoryId(res.url)!==state.directory.id) throw failure('分页返回了其他目录，请在网站核查。');
+      const doc=new DOMParser().parseFromString(res.html,'text/html'), items=collectItems(doc,res.url);
+      if(!items.length) throw failure('下一页未返回可识别书目，请在网站翻页后继续选择。');
+      mergeItems(items,false);state.directory.done=[...new Set([...state.directory.done,res.url])];
+      state.nextListing=nextListingPage(doc,res.url);
+      if(state.directory.done.includes(state.nextListing)) state.nextListing='';
+      ui.listDetails.open=true;
+      progress(`已载入下一页 ${items.length} 项，新载入书目尚未勾选。请在下方选择所需卷册。`);
+    } catch(err) {progress(err.message);}
+    finally {state.busy=false;state.abort=null;render();}
   }
   const sortItems = items => [...items].sort((a,b) =>
     clean(a.entry.work_title).localeCompare(clean(b.entry.work_title), 'zh-Hant') ||
@@ -1141,6 +1177,7 @@
     t.setUint32(0,0x06054b50,true); t.setUint16(8,files.length,true); t.setUint16(10,files.length,true); t.setUint32(12,centralSize,true); t.setUint32(16,offset,true);
     return new Blob([...chunks,...central,tail], {type});
   }
+  // eslint-disable-next-line no-control-regex -- XML 1.0 forbids these control characters.
   const xml = v => String(v ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'})[c]);
   const labelOf = (values,k) => values.find(([key]) => key === k)?.[1] || '';
   async function searchWorkbook(records) {
@@ -1251,11 +1288,11 @@
   function markEdit(item,field,value) {
     item.edits={...item.edits,[field]:value}; item.record.entry[field]=value; refreshAuto(); saveDraft();
   }
-  function mergeItems(items) {
+  function mergeItems(items,selectNew=true) {
     const existing=new Map(state.items.map(item=>[item.id,item]));
     for(const item of items) if(!existing.has(item.id)) {
       if(existing.size>=MAX_ITEMS) throw failure('目录超过 300 项，请缩小范围；尚未将目录标记为完整。');
-      existing.set(item.id,{...item,selected:isSearchResults(location.href) ? false : state.selectionChanged ? item.selected : !bundle(item),record:cacheRead(item.id)});
+      existing.set(item.id,{...item,selected:!selectNew || isSearchResults(location.href) ? false : state.selectionChanged ? item.selected : !bundle(item),record:cacheRead(item.id)});
     }
     state.items=[...existing.values()];
   }
@@ -1494,10 +1531,21 @@
   }
   function link(text,url,parent) { const a=el('a',text,parent); a.href=url; a.target='_blank'; a.rel='noopener noreferrer'; return a; }
   function searchSelectionRows() {
-    if(!isSearchResults(location.href)) return [];
+    if(!isSearchResults(location.href)) {
+      if(!CURRENT_SITE || productId(location.href) || !CURRENT_SITE.list(new URL(location.href))) return [];
+      const ids=new Set(collectItems(document).map(item=>item.id)), seen=new Set();
+      return [...document.querySelectorAll('a[href]')].flatMap(a=>{
+        if(a.closest('#bcd-panel')) return [];
+        const id=productId(a.href);
+        if(!ids.has(id) || seen.has(id)) return [];
+        seen.add(id);
+        const row=a.closest('li.product,.productBox,.single-item,.product-thumb,.product_grid-item,.ProductList-item') || a.parentElement;
+        return [{row,container:row,id}];
+      });
+    }
     const rule=SEARCH_CHOICES[CURRENT_SITE?.key];
     if(rule) return [...document.querySelectorAll(rule.rows)].map(row=>{
-      const href=row.querySelector(rule.link)?.getAttribute('href');
+      const href=(row.matches('a[href]') ? row : row.querySelector(rule.link))?.getAttribute('href');
       return {row,container:row.querySelector(rule.container || ':scope') || row,id:href ? productId(new URL(href,location.href).href) : ''};
     });
     return [...document.querySelectorAll('.table-searchbox [id^="prod-itemlist-"],main [id^="prod-itemlist-"]')]
@@ -1506,10 +1554,20 @@
   }
   function renderSearchSelection() {
     const items=new Map(state.items.map(item=>[item.id,item]));
-    for(const {row,container,id} of searchSelectionRows()) {
+    for(const entry of searchSelectionRows()) {
+      const {row,id}=entry;let container=entry.container;
       const item=items.get(id);
       if(!item) continue;
-      let label=row.querySelector('.bcd-search-choice');
+      if(row.matches('a[href]')) {
+        let shell=row.parentElement.matches('.bcd-card-shell') ? row.parentElement : null;
+        if(!shell) {
+          shell=el('div');shell.className=row.className.replace(/\bproduct-item\b/,'bcd-card-shell');
+          for(const attr of row.attributes) if(attr.name.startsWith('data-v-')) shell.setAttribute(attr.name,attr.value);
+          row.before(shell);shell.appendChild(row);
+        }
+        container=shell;
+      }
+      let label=container.querySelector('.bcd-search-choice');
       if(!label) {
         label=el('label'); label.className='bcd-search-choice'; container.prepend(label);
         const check=el('input',null,label); check.type='checkbox'; check.setAttribute('aria-label','选入书库：'+item.title);
@@ -1521,6 +1579,7 @@
       }
       const check=label.querySelector('input'); check.checked=item.selected; check.disabled=state.busy;
       label.querySelector('span').textContent=item.selected?'已选入书库':'选入书库';
+      label.dataset.selected=String(item.selected);
     }
   }
   function render() {
@@ -1528,9 +1587,11 @@
     renderSearchSelection();
     ui.list.replaceChildren(); const scope=selected();
     const ready=scope.filter(item=>item.record && !item.error).length;
+    ui.badge.textContent=`已选 ${scope.length}`;
+    ui.listSummary.textContent=`查看 / 调整卷册选择与逐本资料 · ${scope.length} 已选`;
     ui.count.textContent=`已选 ${scope.length} / 已载入 ${state.items.length} 项`+(state.directory ? ` · ${state.directory.complete?'目录已读完（仅书目）':'目录未读完'}` : '')+`\n已选详情已读 ${ready} / ${scope.length} 本 · 待读 ${scope.length-ready} 本`;
     if(unreadSelectionHint()) ui.count.textContent+='\n'+unreadSelectionHint();
-    for (const item of state.items) {
+    for (const item of state.items.filter(item=>!ui.onlySelected?.checked || item.selected)) {
       const row=el('div',null,ui.list); row.className='book';
       const label=el('label',null,row), check=el('input',null,label); check.type='checkbox'; check.checked=item.selected; check.disabled=state.busy;
       const rec=item.record; el('span',rec?.title || item.title,label);
@@ -1567,6 +1628,7 @@
       if (rec.warnings.length) el('p',rec.warnings.join('；'),details);
     }
     ui.panel.querySelectorAll('input,select,textarea,button[data-idle]').forEach(n => {n.disabled=state.busy;});
+    if(ui.nextListing) ui.nextListing.disabled=state.busy || (!state.nextListing && CURRENT_SITE?.key!=='eslite');
     ui.stop.hidden=!state.busy;
     if(ui.back) {ui.back.hidden=state.busy || state.step===1;ui.next.hidden=state.busy || state.step===3;}
     ui.blocked.hidden=!state.blockedUrl; ui.blocked.href=state.blockedUrl || '#';
@@ -1616,6 +1678,7 @@
   function save(blob,name) {
     const href=URL.createObjectURL(blob), a=el('a',null,document.body); a.href=href; a.download=name; a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href),60000);
   }
+  // eslint-disable-next-line no-control-regex -- Windows filenames cannot contain control characters.
   const filename = text => text.replace(/[<>:"/\\|?*\x00-\x1f]/g,'-').slice(0,90) || '博客来';
   async function run(mode) {
     if (state.busy) return;
@@ -1705,6 +1768,7 @@
     if(document.getElementById('bcd-panel')) return;
     const id=productId(location.href), booksSearch=isBooksSearch(location.href), searchResults=isSearchResults(location.href), isSeries=CURRENT_SITE ? CURRENT_SITE.list(new URL(location.href)) : DOUBAN ? /^\/series\/\d+\/?$/.test(location.pathname) : booksSearch || location.hostname==='activity.books.com.tw' && location.pathname.startsWith('/crosscat/show/');
     if(!id && !isSeries) return;
+    state.nextListing=isSeries ? nextListingPage(document,location.href) : '';
     if(id) {
       const item={id,title:id,selected:true,record:null,error:''};
       try {item.record=readCurrentProduct(id); item.title=item.record.title; cacheWrite(item.record); state.message='已读取当前商品页，无需重复联网。请核对卷号与资料后导出。';}
@@ -1762,15 +1826,20 @@
       #bcd-panel button:hover{background:#426286;} #bcd-panel button:disabled{opacity:.55;cursor:default;} #bcd-panel :focus-visible{outline:2px solid #b7dfff;outline-offset:2px;}
       #bcd-panel label{display:block;color:#c6d0df;margin:6px 0;} #bcd-panel input[type=text],#bcd-panel textarea,#bcd-panel select{display:block;font:inherit;color:#e8ecf3;background:#2b3242;border:1px solid #68788e;border-radius:4px;min-height:38px;padding:6px;width:100%;} #bcd-panel textarea{resize:vertical;min-height:78px;}
       #bcd-panel input[type=checkbox]{appearance:auto;width:18px;height:18px;margin:0 8px 0 0;vertical-align:middle;accent-color:#88b6dc;} #bcd-panel a{color:#acd5fc;text-decoration:underline;} #bcd-panel .actions,#bcd-panel .fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0;}
-      .bcd-search-choice{display:flex;align-items:center;align-self:flex-start;flex-shrink:0;gap:8px;width:fit-content;max-width:100%;padding:7px 10px;margin:0 0 8px;background:#eef5fb;color:#234764;border:1px solid #88a9c3;border-radius:4px;font:14px/1.4 "Microsoft JhengHei",sans-serif;white-space:nowrap;cursor:pointer;}
-      .bcd-search-choice input[type=checkbox]{appearance:auto;width:20px;height:20px;flex:none;margin:0;accent-color:#386589;cursor:pointer;} .bcd-search-choice:focus-within{outline:2px solid #386589;outline-offset:2px;}
+      .bcd-search-choice{box-sizing:border-box;display:inline-flex;align-items:center;align-self:flex-start;flex-shrink:0;gap:7px;width:fit-content;max-width:100%;min-height:34px;padding:5px 9px;margin:0 0 8px;background:#f4f7fa;color:#234764;border:1px solid #b5c5d3;border-radius:6px;font:13px/1.4 "Microsoft JhengHei",sans-serif;white-space:nowrap;cursor:pointer;text-decoration:none;}
+      .bcd-search-choice:hover{background:#e8f0f7;border-color:#386589;} .bcd-search-choice[data-selected=true]{background:#e4eff8;border-color:#386589;color:#183d59;}
+      .bcd-search-choice input[type=checkbox]{appearance:auto;width:16px;height:16px;flex:none;margin:0;accent-color:#386589;cursor:pointer;} .bcd-search-choice:focus-within{outline:2px solid #386589;outline-offset:2px;}
+      .bcd-card-shell{display:flex;flex-direction:column;min-width:0;} .bcd-card-shell>a.product-item{display:block;width:100%;min-width:100%;max-width:100%;flex-basis:auto;padding:0;}
       #bcd-panel .book{padding:10px 0;border-top:1px solid #465167;} #bcd-panel .book>label{display:flex;align-items:flex-start;color:#fff;overflow-wrap:anywhere;} #bcd-panel .book input[type=checkbox]{flex:none;margin-top:3px;} #bcd-panel summary{cursor:pointer;padding:6px 0;color:#acd5fc;} #bcd-panel .warning{color:#ffc2b7;} #bcd-panel [hidden]{display:none!important;} #bcd-panel .exports button{width:100%;margin-top:8px;} #bcd-panel #bcd-status{padding:10px 0;border-top:1px solid #465167;} #bcd-panel .step{margin:16px 0 6px;font-size:15px;} #bcd-panel .primary{width:100%;background:#386589;} #bcd-panel .advanced{margin-top:12px;border-top:1px solid #465167;}
       #bcd-panel .wizard-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;position:sticky;top:-12px;padding:10px 0;background:#1f2430;z-index:1;} #bcd-panel .wizard-nav button{background:transparent;padding:8px 2px;} #bcd-panel .wizard-nav button[aria-current=step]{background:#386589;border-color:#acd5fc;color:#fff;} #bcd-panel .wizard-footer{position:sticky;bottom:-12px;background:#1f2430;padding:8px 0 4px;display:flex;gap:8px;border-top:1px solid #465167;} #bcd-panel .wizard-footer button{flex:1;}
       #bcd-panel .combine-books{padding:8px 0;border-block:1px solid #465167;margin:12px 0;} #bcd-panel .combine-books>summary{font-weight:700;font-size:15px;} #bcd-panel .work-preview h4{font-size:15px;margin:16px 0 4px;overflow-wrap:anywhere;} #bcd-panel .work-preview ol{padding-left:24px;margin:8px 0;} #bcd-panel .work-preview li{padding:6px 0;white-space:pre-line;overflow-wrap:anywhere;} #bcd-panel .combine-review>label{display:flex;gap:8px;align-items:flex-start;color:#e8ecf3;} #bcd-panel .combine-review input[type=checkbox]{flex:none;margin-top:3px;}
+      #bcd-panel.collapsed{width:auto;max-width:calc(100vw - 24px);} #bcd-panel .head{gap:12px;} #bcd-panel h2{overflow-wrap:anywhere;flex:1;min-width:0;} #bcd-panel .selection-badge{font-size:12px;color:#c6d0df;white-space:nowrap;font-variant-numeric:tabular-nums;} #bcd-panel .head button{padding:5px 10px;min-height:34px;flex:none;}
+      #bcd-panel .actions{grid-template-columns:repeat(2,minmax(0,1fr));} #bcd-panel .actions button{min-width:0;} #bcd-panel .wizard-footer button:last-of-type{background:#386589;border-color:#88b6dc;} #bcd-panel .selection-help{font-size:12px;} #bcd-panel .book>label{margin:0 0 5px;font-weight:600;} #bcd-panel .book>p{font-size:12px;margin:5px 0;} #bcd-panel .volume-list>summary{font-weight:600;padding:10px 0;} #bcd-panel .volume-list>label{padding:4px 0;} #bcd-panel .body{scrollbar-color:#68788e #1f2430;} #bcd-panel ::selection{background:#386589;color:#fff;}
       @media(max-width:480px){#bcd-panel{right:12px;bottom:12px;font-size:16px;}} @media print{#bcd-panel{display:none;}}`;
     const head=el('div',null,panel); head.className='head'; el('h2',SITE_NAME+'工具箱',head);
-    const body=el('div',null,panel); body.className='body';
-    const collapse=button('收起',() => {body.hidden=!body.hidden; collapse.textContent=body.hidden?'展开':'收起'; collapse.setAttribute('aria-expanded',String(!body.hidden));},head); collapse.setAttribute('aria-expanded','true');
+    ui.badge=el('span','已选 0',head);ui.badge.className='selection-badge';
+    const body=el('div',null,panel); body.className='body';body.id='bcd-body';body.hidden=true;panel.classList.add('collapsed');
+    const collapse=button('展开',() => {body.hidden=!body.hidden;panel.classList.toggle('collapsed',body.hidden); collapse.textContent=body.hidden?'展开':'收起'; collapse.setAttribute('aria-expanded',String(!body.hidden));},head); collapse.setAttribute('aria-expanded','false');collapse.setAttribute('aria-controls','bcd-body');
     const nav=el('nav',null,body);nav.className='wizard-nav';nav.setAttribute('aria-label','导出步骤');
     const steps=[1,2,3].map(number=>{const section=el('section',null,body);section.dataset.step=number;return section;});
     function showStep(number) {
@@ -1810,8 +1879,9 @@
     },combineActions).dataset.idle='true';
     button('返回普通导出',()=>{state.combine=false;state.combineApproved='';progress('已返回普通导出，卷册选择和资料保留。');render();},combine).dataset.idle='true';
     ui.count=el('p','',body);nav.after(ui.count);
-    const listDetails=el('details',null,selection);listDetails.className='volume-list';listDetails.open=true;
-    el('summary','查看 / 调整卷册选择与逐本资料',listDetails);
+    const listDetails=el('details',null,selection);listDetails.className='volume-list';listDetails.open=!searchResults;ui.listDetails=listDetails;
+    ui.listSummary=el('summary','查看 / 调整卷册选择与逐本资料',listDetails);
+    const filterLabel=el('label',null,listDetails);ui.onlySelected=el('input',null,filterLabel);ui.onlySelected.type='checkbox';el('span','仅看已选卷册',filterLabel);ui.onlySelected.addEventListener('change',render);
     ui.list=el('div',null,listDetails);
     const readSelected=button('读取 / 继续读取所选资料',() => void run('read'),review);readSelected.className='primary';readSelected.dataset.idle='true';
     ui.stop=button('立即暂停',() => {state.stop=true; state.abort?.(); progress('正在暂停…');},body);
@@ -1823,12 +1893,24 @@
     const selectionOptions=el('details',null,selection);selectionOptions.className='selection-options';el('summary','批量选择 / 合集选项',selectionOptions);
     selection.prepend(selectionOptions);
     const advanced=el('details',null,review); advanced.className='advanced'; el('summary','高级设置 · 归组与版本',advanced);
-    const actions=el('div',null,selectionOptions); actions.className='actions';
+    const actions=el('div',null,selection); actions.className='actions';selectionOptions.before(actions);
     button('全选本页',() => {state.selectionChanged=true;state.items.filter(i=>!isSeries || state.currentIds.has(i.id)).forEach(i=>{i.selected=ui.includeBundles.checked || !bundle(i);}); progress(`已选 ${selected().length} 本，请读取或核对资料后导出。`); render();},actions).dataset.idle='true';
     button('全部取消',() => {state.selectionChanged=true;state.items.forEach(i=>{i.selected=false;}); progress('已取消全部勾选，不会导出未选择的书。'); render();},actions).dataset.idle='true';
     const includeLabel=el('label',null,selectionOptions); ui.includeBundles=el('input',null,includeLabel); ui.includeBundles.type='checkbox';
     el('span','全选时包含合集／盒装／合售（仅供核对）',includeLabel);
     const readActions=el('div',null,selectionOptions); readActions.className='actions';
+    if(isSeries && !DOUBAN) {
+      const paging=el('div',null,selection);paging.className='actions';actions.after(paging);
+      ui.nextListing=button(CURRENT_SITE?.key==='eslite'?'前往下一页 · 保留已选':'加载下一页书目',()=>{
+        if(CURRENT_SITE?.key==='eslite') {
+          const active=document.querySelector('.search-products-pagination [data-gid="pagination-page"].active'), pages=[...document.querySelectorAll('.search-products-pagination [data-gid="pagination-page"][data-position]')];
+          const next=document.querySelector('.search-products-pagination [data-gid="pagination-next"] button');
+          if(!next || next.disabled || active && pages.length && Number(active.dataset.position)>=Math.max(...pages.map(n=>Number(n.dataset.position)))) {progress('当前页面没有可用的下一页，请使用网站分页。');return;}
+          saveDraft();next.click();
+        } else void loadNextListingPage();
+      },paging);ui.nextListing.dataset.idle='true';
+      el('p','翻页保留已选；加载下一页只读书目，新增项需自行勾选。',selection).className='selection-help';
+    }
     if(DOUBAN && isSeries) {
       button('全选已载入卷册',()=>{selectLoaded();progress(`已选 ${selected().length} 本；合集默认不选，可逐项修改。`);render();},readActions).dataset.idle='true';
       button('全选卷册并继续读取',()=>{
@@ -1850,7 +1932,7 @@
         mergeItems(items);progress('已合并当前页书目，其他页的勾选与修改保留。');
       } catch(err) {if(state.directory) state.directory.complete=false;progress(err.message);}
       render();
-    },readActions).dataset.idle='true';
+    },isSeries && !DOUBAN ? ui.nextListing.parentElement : readActions).dataset.idle='true';
     ui.work=inputControl('统一作品名', '',settings); ui.work.maxLength=240; ui.work.placeholder='留空保留各卷作品名';
     ui.authors=inputControl('统一作者','',settings); ui.authors.maxLength=500;ui.authors.placeholder='读取后自动填写，冲突时保留各卷';
     ui.publisher=inputControl('统一出版社','',settings); ui.publisher.maxLength=160;
@@ -1903,7 +1985,7 @@
     if(searchResults && ['eslite','taaze'].includes(CURRENT_SITE?.key)) {
       // These search pages load or replace cards after document-idle/view changes.
       const selector=SEARCH_CHOICES[CURRENT_SITE.key].rows; let pending;
-      new MutationObserver(changes=>{
+      const observer=new MutationObserver(changes=>{
         const relevant=changes.some(change=>{
           const target=change.target.nodeType===1 ? change.target : change.target.parentElement;
           if(target?.closest('#bcd-panel,.bcd-search-choice')) return false;
@@ -1914,10 +1996,15 @@
         if(!relevant) return;
         clearTimeout(pending); pending=setTimeout(()=>{
           try {
+            if(listingDirectoryId(location.href)!==state.directory.id) {
+              observer.disconnect();saveDraft();
+              document.querySelectorAll('.bcd-search-choice').forEach(n=>n.remove());document.querySelectorAll('.bcd-card-shell').forEach(n=>n.replaceWith(...n.children));panel.remove();
+              Object.assign(state,{items:[],directory:null,dirty:new Set(),auto:new Map(),selectionChanged:false,combine:false,restoredManual:{},warning:'',blockedUrl:''});boot();return;
+            }
             const items=collectItems(document); state.currentIds=new Set(items.map(item=>item.id)); mergeItems(items); render();
           } catch(err) {progress(err.message);}
         },100);
-      }).observe(document.body,{childList:true,subtree:true,characterData:true});
+      });observer.observe(document.body,{childList:true,subtree:true,characterData:true});
     }
   }
   boot();

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.7.9
-// @description  多册商品合成一个作品：勾选或粘贴本站链接，分析并核对卷号，导出 Excel 或带封面 ZIP；支持读册生活、金石堂、三民、豆瓣、出版社及博客来手动采集。
+// @version      2.8.0
+// @description  勾选或粘贴本站链接，核对作品与卷号，导出作品／单卷原图 ZIP 或 Excel；新版 ZIP 需 PC 1.0.12。支持读册生活、金石堂、三民、豆瓣、出版社及博客来。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
 // @updateURL    https://raw.githubusercontent.com/ddsb78/manga-library/main/userscript/books-cover-jpg.user.js
@@ -1259,30 +1259,51 @@
       ['xl/worksheets/sheet1.xml',sheet]
     ], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   }
-  async function localPackage(records, covers) {
-    const files = [], items = sortItems(records).map((record, index) => {
-      // Package identifiers are portable filenames, not encoded publisher URLs.
-      const id = record.id.startsWith('pub-') ? 'publisher-' + (index + 1) : record.id.startsWith('douban-') ? record.id : 'books-' + record.id, blob = covers.get(record.id);
-      if (blob) files.push(['covers/' + id + '.jpg',blob]);
-      return {id,entry:record.entry,cover:blob ? 'covers/' + id + '.jpg' : ''};
-    });
-    const manifest = JSON.stringify({format:'manga-library-local',version:1,items});
+  function recommendedScope(records, combine=false) {
+    return !combine && records.length===1 && records[0].entry.volume_number && !records[0].entry.is_boxed ? 'volume' : 'work';
+  }
+  async function localPackage(records, covers, exportScope=recommendedScope(records)) {
+    const files = [], groups = new Map(), items=[];
+    const sha = async bytes => [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(n=>n.toString(16).padStart(2,'0')).join('');
+    if(exportScope==='volume' && records.length!==1) throw failure('单卷导出只能选择一册；多册请选择作品导出。');
+    for(const record of sortItems(records)) {
+      const id=await sha(encoder.encode('source:'+record.id)), blob=covers.get(record.id);
+      const key=setKey(record.entry);
+      if(!groups.has(key)) groups.set(key,{id:'group-'+(groups.size+1),work_title:record.entry.work_title});
+      let cover=null;
+      if(blob) {
+        const ext={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'}[blob.type];
+        if(!ext) throw failure('封面格式不支持，请重新读取。');
+        const picture=await createImageBitmap(blob);
+        try {
+          const file='covers/'+id+'.'+ext;
+          cover={file,sha256:await sha(await blob.arrayBuffer()),bytes:blob.size,width:picture.width,height:picture.height};
+          files.push([file,blob]);
+        } finally {picture.close();}
+      }
+      const ref=publisherRef(record.id);
+      const provenance={site:ref?.site.key || (record.id.startsWith('douban-') ? 'douban' : 'books'),
+        product_id:record.id,source_title:record.title,work_title:identity(record.title).work_title,
+        volume_basis:identity(record.title).volume_number ? 'title' : 'manual',url:productUrl(record.id)};
+      items.push({id,group_id:groups.get(key).id,entry:record.entry,provenance,cover});
+    }
+    const manifest = JSON.stringify({format:'manga-library-local',version:2,export_scope:exportScope,work_groups:[...groups.values()],items});
     if (encoder.encode(manifest).length > 2*1024*1024) throw failure('资料超过 2 MB，请分批导出。');
     if (!records.length || records.length > MAX_ITEMS) throw failure('每包需要 1–300 本。');
     return zip([['manifest.json',manifest], ...files]);
   }
   async function jpeg(blob) {
     if (!blob.size || blob.size > 20*1024*1024) throw failure('图片为空或超过 20 MB。');
+    const bytes=await blob.arrayBuffer(), head=new Uint8Array(bytes);
+    const type=head[0]===255 && head[1]===216 && head[2]===255 ? 'image/jpeg' :
+      head[0]===137 && head[1]===80 && head[2]===78 && head[3]===71 ? 'image/png' :
+      String.fromCharCode(...head.slice(0,4))==='RIFF' && String.fromCharCode(...head.slice(8,12))==='WEBP' ? 'image/webp' : '';
+    if(!type) throw failure('返回的不是可读取图片，或不是支持的 JPEG、PNG、WEBP；未写入建档包。');
     let image;
     try { image = await createImageBitmap(blob); } catch { throw failure('返回的不是可读取图片，未写入建档包。'); }
     try {
       if (image.width * image.height > 40_000_000 || Math.min(image.width,image.height) < 80) throw failure('图片像素异常，请打开商品检查。');
-      const factor = Math.min(1, 2400/Math.max(image.width,image.height));
-      const canvas = document.createElement('canvas'); canvas.width = Math.round(image.width*factor); canvas.height = Math.round(image.height*factor);
-      const ctx = canvas.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.drawImage(image,0,0,canvas.width,canvas.height);
-      const result = await new Promise(resolve => canvas.toBlob(resolve,'image/jpeg',0.92));
-      if (!result || result.size > 5*1024*1024) throw failure('封面超过 5 MB，请单独处理后上传。');
-      return result;
+      return new Blob([bytes],{type});
     } finally { image.close(); }
   }
   function retryAfter(headers, now = Date.now()) {
@@ -1363,7 +1384,7 @@
     if(!draftId || !ui.work) return;
     const manual=Object.fromEntries([...state.dirty].map(key=>[key,ui[key]?.value || '']));
     const items=state.items.map(({id,title,selected,edits,review})=>({id,title,selected,edits,review}));
-    try { GM_setValue('bcd-series-v1:'+draftId,{savedAt:Date.now(),directory:state.directory,items,manual,selectionChanged:state.selectionChanged,combine:state.combine}); }
+    try { GM_setValue('bcd-series-v1:'+draftId,{savedAt:Date.now(),directory:state.directory,items,manual,selectionChanged:state.selectionChanged,combine:state.combine,exportScope:ui.exportScope?.value || 'auto'}); }
     catch {state.warning='跨页草稿保存失败，当前页资料仍可导出，请暂勿刷新。';}
   }
   function refreshAuto() {
@@ -1371,6 +1392,9 @@
     const heading=clean(document.querySelector('h1')?.textContent);
     const forced=ui.grouping?.value==='same' ? clean(ui.work.value) || identity(heading).work_title || records[0]?.entry.work_title : '';
     state.prepared=prepareSets(records,heading,forced);
+    if(ui.exportHint) ui.exportHint.textContent=recommendedScope(state.prepared,state.combine)==='volume'
+      ? '建议导出单卷，可在 PC 作品的版本中导入；也可改为作品导出。'
+      : '建议导出作品，将按作品和版本分别归组，请核对每册资料。';
     const directory=state.items.map(i=>({...i,record:i.record ? prepareSets([i.record],heading,forced)[0] : null}));
     state.auto=inferSets(state.prepared,directory,Boolean(state.directory?.complete));
     const one=state.auto.size===1 ? [...state.auto.values()][0] : null;
@@ -1792,9 +1816,10 @@
             if (size>MAX_ZIP-2*1024*1024) throw failure('图片合计过大，请分批勾选导出。');
           }
           if (missing.length && !confirm(`${missing.length} 本在商品页没有可用封面，将以“暂缺”入库：\n${missing.slice(0,8).join('\n')}\n仍要导出吗？`)) { progress('已取消导出，资料与已下载封面保留。'); return; }
-          const packet=await localPackage(records,covers);
+          const purpose=ui.exportScope.value==='auto' ? recommendedScope(records,state.combine) : ui.exportScope.value;
+          const packet=await localPackage(records,covers,purpose);
           if(state.stop) throw failure('已暂停，未导出文件；已下载封面保留。','pause');
-          save(packet,filename(ui.work.value || records[0].entry.work_title)+'-书库建档.zip');
+          save(packet,filename(ui.work.value || records[0].entry.work_title)+(purpose==='volume' ? '-单卷建档.zip' : '-作品建档.zip'));
           progress(`已导出 ${records.length} 本资料、${covers.size} 张本地封面。到“我的书库 → 导入本地建档包”预览后确认。`);
         }
       }
@@ -1866,6 +1891,7 @@
             state.directory={id:state.directory.id,done,pending,complete:!pending.length};
           }
           state.restoredManual=saved.manual || {};
+          state.restoredExportScope=saved.exportScope;
           state.combine=saved.combine===true;
           state.selectionChanged=saved.selectionChanged == null ? true : saved.selectionChanged === true;
           for(const item of state.items) if(item.record) Object.assign(item.record.entry,item.edits || {});
@@ -1881,6 +1907,7 @@
         if(!state.items.some(i=>i.id===id)) state.items.unshift(current);
         for(const item of state.items) if(item.record) Object.assign(item.record.entry,item.edits || {});
         state.restoredManual=saved.manual || {};state.selectionChanged=saved.selectionChanged===true;
+        state.restoredExportScope=saved.exportScope;
         state.combine=saved.combine===true;
       }
     }
@@ -1956,8 +1983,10 @@
     ui.stop=button('立即暂停',() => {state.stop=true; state.abort?.(); progress('正在暂停…');},body);
     ui.status=el('p','',body); ui.status.id='bcd-status'; ui.status.setAttribute('role','status'); ui.status.setAttribute('aria-live','polite');
     ui.blocked=link('打开待处理商品（登录 / 验证）','#',body);
-    const settings=el('div',null,review);el('h3','整套资料（自动整理，可修改）',settings).className='step';
+    const settings=el('div',null,review);el('h3','作品与卷册资料（自动整理，可修改）',settings).className='step';
     ui.inference=el('p','',settings);
+    ui.exportScope=selectControl('导出用途',[['auto','自动建议'],['volume','单卷'],['work','作品']],['auto','volume','work'].includes(state.restoredExportScope) ? state.restoredExportScope : 'auto',settings,saveDraft);
+    ui.exportHint=el('p','读取后根据已选书目建议用途，仍可手动选择。',settings);
     ui.grouping=selectControl('归组方式',[['auto','自动识别作品'],['same','按同一作品归组（我已核对）']],'auto',settings);
     const selectionOptions=el('details',null,selection);selectionOptions.className='selection-options';el('summary','批量选择 / 合集选项',selectionOptions);
     selection.prepend(selectionOptions);

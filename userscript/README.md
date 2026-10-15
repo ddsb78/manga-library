@@ -1,10 +1,15 @@
 # 漫画书库fast · 油猴脚本
 
-当前版本：**2.8.0**
+当前版本：**2.8.1**
 
-[安装／更新脚本 2.8.0](https://raw.githubusercontent.com/ddsb78/manga-library/main/userscript/books-cover-jpg.user.js)
+[安装／更新脚本 2.8.1](https://raw.githubusercontent.com/ddsb78/manga-library/main/userscript/books-cover-jpg.user.js)
 
 工具箱默认收起，右下角显示已选数量；书目旁可以直接勾选。书店仅在关键词搜索结果、单本详情与明确套书页显示工具，金石堂新书出版／分类目录页不显示。
+
+## 2.8.1 更新
+
+- 修复豆瓣等跨页面采集时相对链接解析错误，使用被采集页面自身的地址解析商品链接。建档 ZIP 与 2.8.0 保持兼容。
+- 相关离线浏览器解析与建档回归 90 项通过；不代表全部站点已重新实测。
 
 ## 2.8.0 更新
 

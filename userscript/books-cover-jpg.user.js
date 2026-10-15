@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.8.0
+// @version      2.8.1
 // @description  勾选或粘贴本站链接，核对作品与卷号，导出作品／单卷原图 ZIP 或 Excel；新版 ZIP 需 PC 1.0.12。支持读册生活、金石堂、三民、豆瓣、出版社及博客来。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -867,7 +867,7 @@
     }
     const links=anchors.map(a=>seriesUrl(a.getAttribute('href'),canonical,seriesId)).filter(u=>u && new URL(u).searchParams.get('order')===order);
     const first=new URL(canonical); first.searchParams.set('page','1');
-    const items=collectItems(doc);
+    const items=collectItems(doc,url);
     if(!items.length) throw failure('丛书目录没有有效书目，未标记为读取完成。');
     return {url:canonical,links:[...new Set([first.href,...links])],items};
   }
@@ -1131,7 +1131,7 @@
       const ids=new Map();
       for(const row of doc.querySelectorAll('#content .article .subject-list > li')) {
         const a=row.querySelector('h2 a[href],.info h2 a[href]');
-        const id=productId(a?.getAttribute('href') || '');
+        const id=a ? productId(new URL(a.getAttribute('href'),base).href) : '';
         if(id.startsWith('douban-') && !ids.has(id)) ids.set(id,{id,title:clean(a.textContent),selected:false,record:null,error:''});
       }
       return [...ids.values()]; // No recommendations, automatic paging, or silent selection.

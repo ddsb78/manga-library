@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.8.1
+// @version      2.8.2
 // @description  勾选或粘贴本站链接，核对作品与卷号，导出作品／单卷原图 ZIP 或 Excel；新版 ZIP 需 PC 1.0.12。支持读册生活、金石堂、三民、豆瓣、出版社及博客来。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -41,6 +41,8 @@
 // @match        https://www.kodansha.co.jp/titles/*
 // @match        https://www.d-art-shop.tw/products/*
 // @match        https://www.d-art-shop.tw/collections/*
+// @match        https://ecchiya.cyberbiz.co/products/*
+// @match        https://ecchiya.cyberbiz.co/collections/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -84,6 +86,8 @@
 // @connect      dvs-cover.kodansha.co.jp
 // @connect      www.d-art-shop.tw
 // @connect      cdn.store-assets.com
+// @connect      ecchiya.cyberbiz.co
+// @connect      cdn1-next.cybassets.com
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -176,6 +180,36 @@
           }
           return raw;
         }},
+      {key:'ecchiya',label:'暮想出版',region:'TW',hosts:['ecchiya.cyberbiz.co'],coverHosts:['cdn-general.cybassets.com','cdn1-next.cybassets.com'],
+        product:simpleProduct('ecchiya.cyberbiz.co',/^\/products\/[A-Za-z0-9_-]+\/?$/),
+        list:u=>u.hostname==='ecchiya.cyberbiz.co' && /^\/collections\/[^/]+\/?$/.test(u.pathname),
+        parse(doc,url) {
+          let product={};
+          for(const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+            try {const value=JSON.parse(script.textContent);if(value['@type']==='Product') {product=value;break;}} catch { /* Ignore malformed optional structured data. */ }
+          }
+          if(!doc.querySelector('.product_brief') && !product.name && /我已滿18歲|未滿18歲|本網頁含成人內容/.test(doc.body?.textContent || ''))
+            throw failure('请先在暮想官网手动完成 18 岁确认，再等待商品加载后采集。','challenge');
+          const f=fields((paragraphs(doc.querySelector('.product_brief')) || '').split('\n').map(value=>({textContent:value})));
+          const raw=defaults(text(doc,'h1') || product.name || '', '暮想出版');
+          const category=text(doc,'ol.breadcrumb');
+          const code=f.ISBN || product.sku || new URL(url).pathname.split('/').filter(Boolean).pop();
+          let gallery=[];
+          for(const script of doc.querySelectorAll('script:not([src])')) {
+            const match=script.textContent.match(/renderGallery\s*\([\s\S]*?urls:\s*(\[[^\]]+\])/);
+            if(match) {try {gallery=JSON.parse(match[1]);} catch { /* Keep the supplied OG cover when the gallery is malformed. */ } break;}
+          }
+          Object.assign(raw,{authors:authors(f['作者']),isbn:code,pub_date:date(f['出版日'] || f['出版日期']),
+            list_price:amount(doc.querySelector('#price_title del .money_tag')?.getAttribute('data-amount') || product.offers?.price),
+            spec:f['規格'] || f['開本'] || '',rating:/成人漫畫|限制級|18禁/.test(category)?'限制級':f['分級'] || '',
+            cover:abs(gallery[0] || meta(doc,'og:image'),url),
+            description:paragraphs(doc.querySelector('#desc_section_1 .ckeditor'))});
+          if(!isbn13(code) && !/漫畫|同人誌|小說|畫冊|寫真集/.test(category))
+            raw.blocked='未取得书籍类别或有效 ISBN；周边商品不能作为卷册导出';
+          return raw;
+        },
+        collect:(doc,url)=>links(doc,'#collection a.productClick[data-name][href]',url,simpleProduct('ecchiya.cyberbiz.co',/^\/products\/[A-Za-z0-9_-]+\/?$/)),
+        series:()=>''},
       {key:'tohan',label:'台湾东贩',region:'TW',hosts:['www.tohan.com.tw'],coverHosts:['www.tohan.com.tw'],...detailOnly,
         product:u=>u.hostname==='www.tohan.com.tw' && u.pathname==='/product.php' && u.searchParams.get('act')==='view' && /^\d+$/.test(u.searchParams.get('id') || '') ? `https://www.tohan.com.tw/product.php?act=view&id=${u.searchParams.get('id')}` : '',
         parse(doc,url) {
@@ -469,7 +503,7 @@
         return {title:text(doc,'h1'),authors:clean(f['作者']).split(/\s*[/／、;；]\s*/).filter(Boolean),publisher:f['出版社'],...valueCode(code),
           pub_date:date(f['出版日期']),description:paragraphs(doc.querySelector('.pdintro_txt1field.panelCon > span')),
           spec:[f['商品規格'],f['裝訂'],f['頁數']?`${f['頁數']}頁`:''].filter(Boolean).join('；'),rating:f['分級'],
-          list_price:amount(text(doc,'.basicunit.price1 s b.sty00')),currency:'TWD',
+          list_price:amount(text(doc,'.basicunit.price1 s b.sty00') || (!doc.querySelector('.basicunit.price1 s') ? text(doc,'.basicunit.price1 > .basicfield > span > b.sty2') : '')),currency:'TWD',
           cover:/\/(?:restricted|noimage|no_image|noimg_load|nopic|no_pic|default)\.[a-z]+$/i.test(supplied)?sanminCover(code):supplied || sanminCover(code),cover_alternative:sanminCover(code)};},
       series:()=>''},
     {key:'sanmin',label:'三民',region:'TW',hosts:['www.sanmin.com.tw'],coverHosts:['cdnec.sanmin.com.tw'],
@@ -528,7 +562,7 @@
   const DOUBAN = typeof location !== 'undefined' && location.hostname === 'book.douban.com';
   const CURRENT_SITE = typeof location !== 'undefined' ? SITE_ADAPTERS.find(s=>s.hosts.includes(location.hostname)) : null;
   const SITE_NAME = CURRENT_SITE?.label || (DOUBAN ? '豆瓣' : '博客来');
-  const CACHE = CURRENT_SITE ? 'bcd-publisher-v1:'+CURRENT_SITE.key : DOUBAN ? 'bcd-douban-v2' : 'bcd-library-v3';
+  const CACHE = CURRENT_SITE ? (CURRENT_SITE.key==='kingstone' ? 'bcd-publisher-v2:' : 'bcd-publisher-v1:')+CURRENT_SITE.key : DOUBAN ? 'bcd-douban-v2' : 'bcd-library-v3';
   const COOLDOWN = CURRENT_SITE ? 'bcd-publisher-cooldown-v1:'+CURRENT_SITE.key : DOUBAN ? 'bcd-douban-cooldown-v1' : 'bcd-cooldown-v2';
   const MAX_ITEMS = 300, MAX_ZIP = 128 * 1024 * 1024, GAP = 2000;
   const SEARCH_CHOICES = {
@@ -1321,9 +1355,19 @@
     return items.map(item=>item.record?.ebook && physical.has(volumeIdentity(item)) ? {...item,selected:false} : item);
   }
 
+  function ecchiyaAgePending(doc) {
+    const modal=doc.querySelector('#ageModal');
+    return Boolean(modal && !modal.hidden && modal.getClientRects().length &&
+      doc.defaultView.getComputedStyle(modal).visibility!=='hidden');
+  }
+  function ensurePublisherReady() {
+    if(CURRENT_SITE?.key==='ecchiya' && ecchiyaAgePending(document))
+      throw failure('请先在暮想官网手动完成 18 岁确认，再继续采集。','challenge');
+  }
+
   // CommonJS exposes pure functions to the offline regression harness, not to the webpage.
   if (typeof module === 'object' && module.exports) {
-    module.exports = {SITE_ADAPTERS,sanminCover,parsePublisher,parseBook,parseDouban,productId,productUrl,identity,numberText,isbn13,trimFormat,originalCover,collectItems,searchWorkbook,localPackage,jpeg,retryAfter,sortItems,inferSets,prepareSets,setKey,seriesPage,seriesUrl,canonicalPublisher,relatedSeries,supplementIds,directoryGaps,preferPhysicalSelection,booksSearchDirectoryId,citiVariants};
+    module.exports = {SITE_ADAPTERS,sanminCover,parsePublisher,parseBook,parseDouban,productId,productUrl,identity,numberText,isbn13,trimFormat,originalCover,collectItems,searchWorkbook,localPackage,jpeg,retryAfter,sortItems,inferSets,prepareSets,setKey,seriesPage,seriesUrl,canonicalPublisher,relatedSeries,supplementIds,directoryGaps,preferPhysicalSelection,booksSearchDirectoryId,citiVariants,ecchiyaAgePending};
     return;
   }
   const state = {items:[], busy:false, stop:false, abort:null, nextAt:0, cooldownUntil:0, covers:new Map(), message:'核对选中的卷册，再读取资料。', warning:'', blockedUrl:'', directory:null, dirty:new Set(), auto:new Map(), currentIds:new Set(), selectionChanged:false, combine:false, combineApproved:''};
@@ -1577,6 +1621,7 @@
     return null;
   }
   async function fetchRecord(item) {
+    ensurePublisherReady();
     if (item.record) return;
     if(location.hostname==='www.books.com.tw' && productId(location.href)===item.id) {
       // A verification page may have finished loading since the toolbox booted.
@@ -1774,6 +1819,7 @@
     state.busy=true; state.stop=false; state.blockedUrl=''; render();
     let current=null;
     try {
+      ensurePublisherReady();
       if (mode==='read') {
         let done=0, lastRender=0;
         for (const item of scope) {
@@ -1836,6 +1882,7 @@
     if(state.busy) return;
     state.busy=true; state.stop=false; render();
     try {
+      ensurePublisherReady();
       const blob=await fetchCoverBlob(record);
       if(!blob)throw failure('金石堂和三民目前都没有可用封面。');
       const image=await createImageBitmap(blob); image.close(); // Never save a login/error page as a cover.
@@ -1845,6 +1892,7 @@
     finally {state.busy=false; render();}
   }
   function readCurrentProduct(id) {
+    ensurePublisherReady();
     const snapshot=document.documentElement.cloneNode(true);
     snapshot.querySelector('#bcd-panel')?.remove();
     // Some script managers inject inline source. Challenge-pattern literals

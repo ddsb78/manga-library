@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         书库采集 · 金石堂 / 三民 / 豆瓣 / 出版社资料与封面
 // @namespace    local.books.cover
-// @version      2.8.2
+// @version      2.8.3
 // @description  勾选或粘贴本站链接，核对作品与卷号，导出作品／单卷原图 ZIP 或 Excel；新版 ZIP 需 PC 1.0.12。支持读册生活、金石堂、三民、豆瓣、出版社及博客来。
 // @author       you
 // @homepageURL  https://github.com/ddsb78/manga-library/tree/main/userscript
@@ -1410,7 +1410,7 @@
   }
   function unreadSelectionHint() {
     const unselected=state.items.filter(item=>!item.selected && !bundle(item)).length;
-    return DOUBAN && state.directory && unselected ? `另有 ${unselected} 本卷册未勾选，不会读取；要读整套，请在第 1 步“批量选择”中选择已载入整套。` : '';
+    return DOUBAN && state.directory && unselected ? `另有 ${unselected} 本卷册未勾选，不会读取；要读整套，点击第 1 步“全选丛书并读取资料”。` : '';
   }
   function markEdit(item,field,value) {
     item.edits={...item.edits,[field]:value}; item.record.entry[field]=value; refreshAuto(); saveDraft();
@@ -1546,11 +1546,21 @@
         dir.complete=false; saveDraft(); render();
       }
       dir.complete=true; saveDraft(); progress(`目录已读完：${dir.done.length} 页 / ${state.items.length} 项（仅书目，不代表详情已读取）。请核对勾选范围，再读取所选详情。`);
+      return true;
     } catch(err) {
       state.directory.complete=false;
       state.blockedUrl=['challenge','login','cooldown'].includes(err.kind) ? current : '';
       progress(err.message); saveDraft();
+      return false;
     } finally {state.busy=false; state.abort=null; render();}
+  }
+  async function readAndReview(wholeSeries=false) {
+    if(state.busy) return;
+    if(wholeSeries) {
+      if(!await loadDirectory()) return;
+      selectLoaded();
+    }
+    if(await run('read')) ui.showStep(2);
   }
   function progress(text) { state.message=text; ui.status.textContent=text + (state.warning ? '\n' + state.warning : ''); }
   function rememberCooldown(until) {
@@ -1762,6 +1772,7 @@
     ui.panel.querySelectorAll('input,select,textarea,button[data-idle]').forEach(n => {n.disabled=state.busy;});
     if(ui.nextListing) ui.nextListing.disabled=state.busy || (!state.nextListing && CURRENT_SITE?.key!=='eslite');
     ui.stop.hidden=!state.busy;
+    if(ui.readAll) ui.readAll.textContent=state.busy ? '正在读取，请稍候…' : state.directory?.done.length>1 && (!state.directory.complete || scope.some(i=>!i.record || i.error)) ? '继续全选丛书并读取资料' : '全选丛书并读取资料';
     if(ui.back) {ui.back.hidden=state.busy || state.step===1;ui.next.hidden=state.busy || state.step===3;}
     ui.blocked.hidden=!state.blockedUrl; ui.blocked.href=state.blockedUrl || '#';
     progress(state.message); saveDraft();
@@ -1834,6 +1845,7 @@
         }
         preferPhysicalProducts();
         progress(`已读取 ${done} 本（本次勾选范围）。${unreadSelectionHint()}请核对作品名、卷号、版本和总卷数，再选择导出方式。`);
+        return true;
       } else {
         const records=checkedRecords();
         if (mode==='search') {
@@ -1977,7 +1989,7 @@
       #bcd-panel .wizard-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;position:sticky;top:-12px;padding:10px 0;background:#1f2430;z-index:1;} #bcd-panel .wizard-nav button{background:transparent;padding:8px 2px;} #bcd-panel .wizard-nav button[aria-current=step]{background:#386589;border-color:#acd5fc;color:#fff;} #bcd-panel .wizard-footer{position:sticky;bottom:-12px;background:#1f2430;padding:8px 0 4px;display:flex;gap:8px;border-top:1px solid #465167;} #bcd-panel .wizard-footer button{flex:1;}
       #bcd-panel .combine-books{padding:8px 0;border-block:1px solid #465167;margin:12px 0;} #bcd-panel .combine-books>summary{font-weight:700;font-size:15px;} #bcd-panel .work-preview h4{font-size:15px;margin:16px 0 4px;overflow-wrap:anywhere;} #bcd-panel .work-preview ol{padding-left:24px;margin:8px 0;} #bcd-panel .work-preview li{padding:6px 0;white-space:pre-line;overflow-wrap:anywhere;} #bcd-panel .combine-review>label{display:flex;gap:8px;align-items:flex-start;color:#e8ecf3;} #bcd-panel .combine-review input[type=checkbox]{flex:none;margin-top:3px;}
       #bcd-panel.collapsed{width:auto;max-width:calc(100vw - 24px);} #bcd-panel .head{gap:12px;} #bcd-panel h2{overflow-wrap:anywhere;flex:1;min-width:0;} #bcd-panel .selection-badge{font-size:12px;color:#c6d0df;white-space:nowrap;font-variant-numeric:tabular-nums;} #bcd-panel .head button{padding:5px 10px;min-height:34px;flex:none;}
-      #bcd-panel .actions{grid-template-columns:repeat(2,minmax(0,1fr));} #bcd-panel .actions button{min-width:0;} #bcd-panel .wizard-footer button:last-of-type{background:#386589;border-color:#88b6dc;} #bcd-panel .selection-help{font-size:12px;} #bcd-panel .book>label{margin:0 0 5px;font-weight:600;} #bcd-panel .book>p{font-size:12px;margin:5px 0;} #bcd-panel .volume-list>summary{font-weight:600;padding:10px 0;} #bcd-panel .volume-list>label{padding:4px 0;} #bcd-panel .body{scrollbar-color:#68788e #1f2430;} #bcd-panel ::selection{background:#386589;color:#fff;}
+      #bcd-panel .actions{grid-template-columns:repeat(2,minmax(0,1fr));} #bcd-panel .actions button{min-width:0;} #bcd-panel .wizard-footer button:last-of-type{background:#386589;border-color:#88b6dc;} #bcd-panel .selection-help{font-size:12px;} #bcd-panel .selection-tools>.primary{margin-bottom:8px;} #bcd-panel .read-selection{width:100%;background:transparent;margin-bottom:8px;} #bcd-panel .selection-tools>.selection-options{margin-bottom:12px;} #bcd-panel .book>label{margin:0 0 5px;font-weight:600;} #bcd-panel .book>p{font-size:12px;margin:5px 0;} #bcd-panel .volume-list>summary{font-weight:600;padding:10px 0;} #bcd-panel .volume-list>label{padding:4px 0;} #bcd-panel .body{scrollbar-color:#68788e #1f2430;} #bcd-panel ::selection{background:#386589;color:#fff;}
       @media(max-width:480px){#bcd-panel{right:12px;bottom:12px;font-size:16px;}} @media print{#bcd-panel{display:none;}}`;
     const head=el('div',null,panel); head.className='head'; el('h2',SITE_NAME+'工具箱',head);
     ui.badge=el('span','已选 0',head);ui.badge.className='selection-badge';
@@ -1988,7 +2000,7 @@
     function showStep(number) {
       state.step=number;steps.forEach((section,index)=>{section.hidden=index!==number-1;});
       nav.querySelectorAll('button').forEach((n,index)=>{if(index===number-1)n.setAttribute('aria-current','step');else n.removeAttribute('aria-current');});
-      if(ui.back) {ui.back.hidden=number===1;ui.next.hidden=number===3;ui.next.textContent=number===1?'下一步：读取并核对':'下一步：导出';}
+      if(ui.back) {ui.back.hidden=number===1;ui.next.hidden=number===3;ui.next.textContent=number===1 ? DOUBAN && isSeries ? '读取整套并核对' : '读取所选并核对' : '下一步：导出';}
       body.scrollTop=0;
     }
     ui.showStep=showStep;
@@ -2006,8 +2018,7 @@
         const items=collectItems(document);mergeItems(items);state.currentIds=new Set(items.map(i=>i.id));state.selectionChanged=true;
         progress(`已载入 ${items.length} 条本页套书目录，请选择所需卷册；不代表全套完整。`);render();
       },selection).dataset.idle='true';
-    } else el('p',variants.length ? '本页包含多个书目／期数组合。展开卷册列表勾选所需版本与册号；采用该变体的封面和价格，缺失作者、书号与简介请补录。' : searchResults ? '搜索结果可能包含其他作品。先勾选所需卷册，再分析或读取；不读取推荐区，翻页后保留选择，缺少的册可补链接。' : CURRENT_SITE ? '只读取当前页面已显示的书目，不保证全套完整；不同作品 / 版本请取消勾选。可翻页后刷新本页书目或手动补卷链接。' : DOUBAN ? '默认选择已识别卷册（不含合集）。先读取完整目录，再核对选择。' : '默认选择当前系列的非合集卷册，请核对。',selection);
-    if(DOUBAN && isSeries) {const readDirectory=button('读取 / 继续读取整个丛书目录',()=>void loadDirectory(),selection);readDirectory.className='primary';readDirectory.dataset.idle='true';}
+    } else el('p',variants.length ? '本页包含多个书目／期数组合。展开卷册列表勾选所需版本与册号；采用该变体的封面和价格，缺失作者、书号与简介请补录。' : searchResults ? '搜索结果可能包含其他作品。先勾选所需卷册，再分析或读取；不读取推荐区，翻页后保留选择，缺少的册可补链接。' : CURRENT_SITE ? '只读取当前页面已显示的书目，不保证全套完整；不同作品 / 版本请取消勾选。可翻页后刷新本页书目或手动补卷链接。' : DOUBAN ? '点击“全选丛书并读取资料”，自动读取后续分页与各册详情，完成后进入核对。合集默认不选。' : '默认选择当前系列的非合集卷册，请核对。',selection);
     const combine=el('details',null,selection);combine.className='combine-books';combine.open=state.combine;
     el('summary','多册合成作品',combine);
     el('p','不用网站列成套书。勾选当前页卷册，或粘贴本站的多册商品链接，与已勾选卷册一起分析；之后核对作品名和卷号。',combine);
@@ -2030,23 +2041,31 @@
     const readSelected=button('读取 / 继续读取所选资料',() => void run('read'),review);readSelected.className='primary';readSelected.dataset.idle='true';
     ui.stop=button('立即暂停',() => {state.stop=true; state.abort?.(); progress('正在暂停…');},body);
     ui.status=el('p','',body); ui.status.id='bcd-status'; ui.status.setAttribute('role','status'); ui.status.setAttribute('aria-live','polite');
-    ui.blocked=link('打开待处理商品（登录 / 验证）','#',body);
+    ui.count.after(ui.status);
+    ui.blocked=link('打开待处理商品（登录 / 验证）','#',body);ui.status.after(ui.blocked);
     const settings=el('div',null,review);el('h3','作品与卷册资料（自动整理，可修改）',settings).className='step';
     ui.inference=el('p','',settings);
     ui.exportScope=selectControl('导出用途',[['auto','自动建议'],['volume','单卷'],['work','作品']],['auto','volume','work'].includes(state.restoredExportScope) ? state.restoredExportScope : 'auto',settings,saveDraft);
     ui.exportHint=el('p','读取后根据已选书目建议用途，仍可手动选择。',settings);
     ui.grouping=selectControl('归组方式',[['auto','自动识别作品'],['same','按同一作品归组（我已核对）']],'auto',settings);
-    const selectionOptions=el('details',null,selection);selectionOptions.className='selection-options';el('summary','批量选择 / 合集选项',selectionOptions);
-    selection.prepend(selectionOptions);
+    const selectionTools=el('div',null,selection);selectionTools.className='selection-tools';selection.prepend(selectionTools);
+    if(DOUBAN && isSeries) {
+      ui.readAll=button('全选丛书并读取资料',()=>void readAndReview(true),selectionTools);
+      ui.readAll.className='primary';ui.readAll.dataset.idle='true';
+    }
+    const readSelection=button('读取所选卷册并核对',()=>void readAndReview(),selectionTools);
+    readSelection.className=DOUBAN && isSeries ? 'read-selection' : 'primary';readSelection.dataset.idle='true';
+    const selectionOptions=el('details',null,selectionTools);selectionOptions.className='selection-options';el('summary','更多选项 · 合集与目录',selectionOptions);
     const advanced=el('details',null,review); advanced.className='advanced'; el('summary','高级设置 · 归组与版本',advanced);
-    const actions=el('div',null,selection); actions.className='actions';selectionOptions.before(actions);
-    button('全选本页',() => {state.selectionChanged=true;state.items.filter(i=>!isSeries || state.currentIds.has(i.id)).forEach(i=>{i.selected=ui.includeBundles.checked || !bundle(i);}); progress(`已选 ${selected().length} 本，请读取或核对资料后导出。`); render();},actions).dataset.idle='true';
+    const actions=el('div',null,selectionTools); actions.className='actions';selectionOptions.before(actions);
+    if(DOUBAN && isSeries) button('全选已载入卷册',()=>{selectLoaded();progress(`已选 ${selected().length} 本；可逐项修改后读取所选资料。`);render();},actions).dataset.idle='true';
+    button('全选本页',() => {state.selectionChanged=true;state.items.filter(i=>!isSeries || state.currentIds.has(i.id)).forEach(i=>{i.selected=ui.includeBundles.checked || !bundle(i);}); progress(`已选 ${selected().length} 本，请读取或核对资料后导出。`); render();},DOUBAN && isSeries ? selectionOptions : actions).dataset.idle='true';
     button('全部取消',() => {state.selectionChanged=true;state.items.forEach(i=>{i.selected=false;}); progress('已取消全部勾选，不会导出未选择的书。'); render();},actions).dataset.idle='true';
     const includeLabel=el('label',null,selectionOptions); ui.includeBundles=el('input',null,includeLabel); ui.includeBundles.type='checkbox';
     el('span','全选时包含合集／盒装／合售（仅供核对）',includeLabel);
     const readActions=el('div',null,selectionOptions); readActions.className='actions';
     if(isSeries && !DOUBAN && !variants.length) {
-      const paging=el('div',null,selection);paging.className='actions';actions.after(paging);
+      const paging=el('div',null,selectionTools);paging.className='actions';actions.after(paging);
       ui.nextListing=button(CURRENT_SITE?.key==='eslite'?'前往下一页 · 保留已选':'加载下一页书目',()=>{
         if(CURRENT_SITE?.key==='eslite') {
           const active=document.querySelector('.search-products-pagination [data-gid="pagination-page"].active'), pages=[...document.querySelectorAll('.search-products-pagination [data-gid="pagination-page"][data-position]')];
@@ -2058,12 +2077,8 @@
       el('p','翻页保留已选；加载下一页只读书目，新增项需自行勾选。',selection).className='selection-help';
     }
     if(DOUBAN && isSeries) {
-      button('全选已载入卷册',()=>{selectLoaded();progress(`已选 ${selected().length} 本；合集默认不选，可逐项修改。`);render();},readActions).dataset.idle='true';
-      button('全选卷册并继续读取',()=>{
-        if(state.busy) return;
-        selectLoaded(); void run('read');
-      },readActions).dataset.idle='true';
-      el('p','全选包含其他分页已载入卷册；合集按上方开关处理。',selectionOptions);
+      button('仅读取 / 继续读取丛书目录',()=>void loadDirectory(),readActions).dataset.idle='true';
+      el('p','仅读目录不读取详情，已有手动勾选保留。',selectionOptions);
     }
     if(isSeries) button('刷新本页书目',() => {
       const items=variants.length ? citiVariants(document,location.href).map(row=>({id:productId(row.url),title:row.title,selected:false})) : collectItems(document); state.currentIds=new Set(items.map(i=>i.id));
@@ -2117,7 +2132,7 @@
     el('p','不会自动写入书库，也不会改动现有藏书。',exports);
     const footer=el('div',null,body);footer.className='wizard-footer';
     ui.back=button('上一步',()=>showStep(state.step-1),footer);ui.back.dataset.idle='true';
-    ui.next=button('',()=>{const previous=state.step;showStep(previous+1);if(previous===1 && selected().some(i=>!i.record || i.error))void run('read');},footer);ui.next.dataset.idle='true';
+    ui.next=button('',()=>{if(state.step===1)void readAndReview(DOUBAN && isSeries);else showStep(state.step+1);},footer);ui.next.dataset.idle='true';
     footer.appendChild(ui.stop);
     showStep(1);
     if(!state.items.length) state.message='未找到当前页的系列书目。请确认已加载书目，或打开单本页面读取；不会扫描推荐区。';
